@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bell Icon Generator</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            border: 1px solid #ccc;
+            background: white;
+            margin: 20px;
+        }
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            background: #FFC107;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px;
+        }
+        button:hover {
+            background: #FFD54F;
+        }
+        .info {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px;
+            max-width: 600px;
+        }
+    </style>
+</head>
+<body>
+    <div class="info">
+        <h2>📱 Bell App Icon Generator</h2>
+        <p>This will generate a yellow bell icon with white background at 512x512px (recommended for app icons).</p>
+        <p>After downloading, save it as <strong>bell_icon.png</strong> in the <strong>assets</strong> folder.</p>
+    </div>
+    
+    <canvas id="canvas" width="512" height="512"></canvas>
+    
+    <button onclick="generateIcon()">Generate Icon</button>
+    <button onclick="downloadIcon()">Download bell_icon.png</button>
+    
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        function generateIcon() {
+            // Clear canvas
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, 512, 512);
+            
+            // Draw bell
+            ctx.save();
+            ctx.translate(256, 256);
+            
+            // Bell body (main curve)
+            ctx.fillStyle = '#FFC107';
+            ctx.beginPath();
+            ctx.moveTo(0, -100);
+            // Left curve
+            ctx.bezierCurveTo(-120, -80, -100, 20, -80, 80);
+            // Bottom left
+            ctx.lineTo(-80, 90);
+            ctx.lineTo(80, 90);
+            // Bottom right
+            ctx.lineTo(80, 80);
+            // Right curve
+            ctx.bezierCurveTo(100, 20, 120, -80, 0, -100);
+            ctx.closePath();
+            ctx.fill();
+            
+            // Bell top knob
+            ctx.fillStyle = '#FFC107';
+            ctx.beginPath();
+            ctx.arc(0, -110, 20, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Bell clapper
+            ctx.fillStyle = '#FFA000';
+            ctx.beginPath();
+            ctx.arc(0, 60, 25, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Add shine/highlight
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.beginPath();
+            ctx.ellipse(-30, -30, 40, 60, -0.5, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Shadow at bottom
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+            ctx.fillRect(-80, 85, 160, 10);
+            
+            ctx.restore();
+        }
+        
+        function downloadIcon() {
+            const link = document.createElement('a');
+            link.download = 'bell_icon.png';
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        }
+        
+        // Auto-generate on load
+        generateIcon();
+    </script>
+</body>
+</html>

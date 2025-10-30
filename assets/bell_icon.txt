@@ -1,0 +1,24 @@
+Bell App Icon Configuration
+============================
+
+Icon Design:
+- Yellow bell (#FFC107 - Amber)
+- White background (#FFFFFF)
+- Simple, clean bell shape
+- Rounded corners for modern look
+
+Recommended sizes for Android:
+- mdpi: 48x48
+- hdpi: 72x72
+- xhdpi: 96x96
+- xxhdpi: 144x144
+- xxxhdpi: 192x192
+
+For best results, create the icon using:
+1. Use flutter_launcher_icons package, OR
+2. Create PNG files manually and place in android/app/src/main/res/mipmap-* folders
+
+Color scheme:
+- Bell color: #FFC107 (Amber/Yellow)
+- Background: #FFFFFF (White)
+- Shadow/outline: #FFA000 (Darker amber for depth)
