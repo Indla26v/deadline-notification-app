@@ -3,21 +3,32 @@ class UserProfile {
   String registrationNumber;
   String primaryEmail;
   String secondaryEmail;
+  List<String> whitelistedEmails; // Custom email whitelist
 
   UserProfile({
     this.name = '',
     this.registrationNumber = '',
     this.primaryEmail = '',
     this.secondaryEmail = '',
-  });
+    List<String>? whitelistedEmails,
+  }) : whitelistedEmails = whitelistedEmails ?? _getDefaultWhitelistedEmails();
+
+  // Default whitelisted emails for VIT-AP
+  static List<String> _getDefaultWhitelistedEmails() {
+    return [
+      'students.cdc.2026@vitap.ac.in',
+      'placement@vitap.ac.in',
+    ];
+  }
 
   // Convert to JSON for SharedPreferences
-  Map<String, String> toJson() {
+  Map<String, dynamic> toJson() {
     return {
       'name': name,
       'registrationNumber': registrationNumber,
       'primaryEmail': primaryEmail,
       'secondaryEmail': secondaryEmail,
+      'whitelistedEmails': whitelistedEmails,
     };
   }
 
@@ -28,6 +39,9 @@ class UserProfile {
       registrationNumber: json['registrationNumber'] ?? '',
       primaryEmail: json['primaryEmail'] ?? '',
       secondaryEmail: json['secondaryEmail'] ?? '',
+      whitelistedEmails: json['whitelistedEmails'] != null 
+          ? List<String>.from(json['whitelistedEmails'])
+          : _getDefaultWhitelistedEmails(),
     );
   }
 
@@ -38,8 +52,27 @@ class UserProfile {
            (primaryEmail.isNotEmpty || secondaryEmail.isNotEmpty);
   }
 
+  // Check if email sender is whitelisted
+  bool isSenderWhitelisted(String senderEmail) {
+    if (whitelistedEmails.isEmpty) return true; // If no whitelist, allow all
+    
+    final senderLower = senderEmail.toLowerCase();
+    return whitelistedEmails.any((whitelisted) {
+      final whitelistedLower = whitelisted.toLowerCase();
+      // Check exact match or if sender contains whitelisted email
+      return senderLower.contains(whitelistedLower) || 
+             whitelistedLower.contains(senderLower);
+    });
+  }
+
   // Check if email body or subject contains profile information
-  bool matchesEmail(String subject, String body) {
+  // Now also checks if sender is whitelisted
+  bool matchesEmail(String subject, String body, String senderEmail) {
+    // First check if sender is whitelisted
+    if (!isSenderWhitelisted(senderEmail)) {
+      return false; // Not from whitelisted sender, skip profile matching
+    }
+
     if (!isComplete) return false;
 
     final searchText = '$subject $body'.toLowerCase();

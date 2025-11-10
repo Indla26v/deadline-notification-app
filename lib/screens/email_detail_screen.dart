@@ -10,6 +10,9 @@ import '../models/email_model.dart';
 import '../services/gmail_service.dart';
 import '../services/email_database.dart';
 import '../services/alarm_service.dart';
+import '../services/in_app_alarm_service.dart';
+import '../widgets/success_alert_bar.dart';
+import '../widgets/parser_results_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:googleapis_auth/auth_io.dart' as auth;
 
@@ -31,6 +34,7 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
   final GmailService _gmailService = GmailService();
   final EmailDatabase _emailDatabase = EmailDatabase.instance;
   final AlarmService _alarmService = AlarmService();
+  final InAppAlarmService _inAppAlarmService = InAppAlarmService();
   final Map<String, bool> _downloadingAttachments = {};
   String? _googleFormUrl;
 
@@ -416,26 +420,80 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
   Future<void> _addAlarm() async {
     try {
       final text = '${widget.email.subject}\n${widget.email.body}';
-      final detectedTime = _alarmService.parseTimeFromText(text);
+      print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      print('DETECTING TIME FROM EMAIL:');
+      print('Subject: ${widget.email.subject}');
+      print('Body preview: ${widget.email.body.substring(0, widget.email.body.length > 200 ? 200 : widget.email.body.length)}...');
       
-      if (detectedTime == null) {
+      final parseResult = _alarmService.parseTimeFromText(text);
+      
+      print('Parse result: $parseResult');
+      
+      if (parseResult == null) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No valid time found in this email.'),
-            duration: Duration(seconds: 3),
-            backgroundColor: Colors.orange,
-          ),
+        showSuccessAlert(
+          context,
+          '⚠️ No valid time found in this email.',
         );
         return;
       }
 
-      // Schedule the alarm
-      await _alarmService.scheduleAlarm(
-        label: widget.email.subject,
-        scheduledDate: detectedTime,
-        link: widget.email.link,
+      final detectedTime = parseResult['finalDate'] as DateTime?;
+      final candidatesLog = parseResult['candidatesLog'] as List<String>;
+
+      print('Detected time: $detectedTime');
+      if (detectedTime != null) {
+        final dateFormat = DateFormat('MMM d, yyyy HH:mm:ss');
+        print('Formatted: ${dateFormat.format(detectedTime)}');
+        print('Millis: ${detectedTime.millisecondsSinceEpoch}');
+      }
+      print('CANDIDATES LOG:\n${candidatesLog.join('\n')}');
+      print('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+      if (detectedTime == null) {
+        if (!mounted) return;
+        showSuccessAlert(
+          context,
+          '⚠️ No valid time found in this email.',
+        );
+        return;
+      }
+
+      // Show parser results dialog
+      if (!mounted) return;
+      
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => ParserResultsDialog(
+          parseResult: parseResult,
+          emailSubject: widget.email.subject,
+          emailBody: widget.email.body.length > 500 
+              ? '${widget.email.body.substring(0, 500)}...' 
+              : widget.email.body,
+          onConfirm: () => Navigator.of(context).pop(true),
+          onCancel: () => Navigator.of(context).pop(false),
+        ),
+      );
+
+      if (confirmed != true || !mounted) return;
+
+      // Check if the time is in the past
+      if (detectedTime.isBefore(DateTime.now())) {
+        if (!mounted) return;
+        showSuccessAlert(
+          context,
+          '⚠️ Cannot set alarm for past time',
+        );
+        return;
+      }
+
+      // Schedule the in-app alarm
+      await _inAppAlarmService.scheduleAlarm(
         emailId: widget.email.id,
+        subject: widget.email.subject,
+        sender: widget.email.sender,
+        scheduledTime: detectedTime,
+        emailLink: widget.email.link,
       );
 
       // Update email state
@@ -448,15 +506,15 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
       await _emailDatabase.updateEmail(widget.email);
 
       if (!mounted) return;
-      final dateFormat = DateFormat('MMM d, yyyy \'at\' h:mm a');
+      final dateFormat = DateFormat('MMM d, yyyy HH:mm:ss');
       final scheduledStr = dateFormat.format(detectedTime);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('✓ Alarm scheduled for:\n$scheduledStr'),
-          duration: const Duration(seconds: 4),
-          backgroundColor: Colors.green,
-        ),
+      showSuccessAlert(
+        context,
+        '✓ Alarm set for $scheduledStr',
       );
+      
+      // Notify parent to refresh
+      Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -471,6 +529,14 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
 
   Future<void> _removeAlarm() async {
     try {
+      // Save alarm time before removing for the snackbar message
+      final removedTime = widget.email.alarmTimes.isNotEmpty 
+          ? widget.email.alarmTimes.first 
+          : null;
+      
+      // Cancel the in-app alarm
+      await _inAppAlarmService.cancelAlarm(widget.email.id);
+      
       setState(() {
         widget.email.hasAlarm = false;
         widget.email.alarmTimes = [];
@@ -480,13 +546,17 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
       await _emailDatabase.updateEmail(widget.email);
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('✓ Alarm removed\nNote: Please also delete the alarm from your Clock app'),
-          duration: Duration(seconds: 4),
-          backgroundColor: Colors.orange,
-        ),
+      final dateFormat = DateFormat('MMM d, h:mm a');
+      final timeStr = removedTime != null 
+          ? dateFormat.format(removedTime)
+          : 'now';
+      showSuccessAlert(
+        context,
+        '✓ Alarm removed for $timeStr',
       );
+      
+      // Notify parent to refresh
+      Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

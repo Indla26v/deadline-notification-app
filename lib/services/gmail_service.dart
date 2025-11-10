@@ -60,13 +60,17 @@ class GmailService {
     return await _googleSignIn.isSignedIn();
   }
 
+  Future<GoogleSignInAccount?> getCurrentUser() async {
+    return _googleSignIn.currentUser;
+  }
+
   Future<List<EmailModel>> fetchEmails(auth.AuthClient client, {String? pageToken}) async {
     final gmailApi = gmail.GmailApi(client);
     
     // Fetch threads instead of individual messages
     final threadsResponse = await gmailApi.users.threads.list(
       'me', 
-      maxResults: 20, 
+      maxResults: 100, // Increased from 20 to 100 for more emails per fetch
       q: 'in:inbox',
       pageToken: pageToken,
     );

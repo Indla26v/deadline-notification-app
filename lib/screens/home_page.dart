@@ -12,11 +12,16 @@ import '../models/email_model.dart';
 import '../models/user_profile.dart';
 import '../services/gmail_service.dart';
 import '../services/alarm_service.dart';
+import '../services/in_app_alarm_service.dart';
 import '../services/profile_service.dart';
 import '../services/email_database.dart';
+import '../services/websocket_service.dart';
 import '../widgets/bell_icon.dart';
+import '../widgets/parser_results_dialog.dart';
+import '../widgets/success_alert_bar.dart';
 import 'email_detail_screen.dart';
 import 'edit_profile_screen.dart';
+import 'alarm_management_screen.dart';
 
 class HomePage extends StatefulWidget {
   @override
@@ -26,8 +31,10 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final GmailService _gmailService = GmailService();
   final AlarmService _alarmService = AlarmService();
+  final InAppAlarmService _inAppAlarmService = InAppAlarmService();
   final ProfileService _profileService = ProfileService();
   final EmailDatabase _emailDatabase = EmailDatabase.instance;
+  final WebSocketService _wsService = WebSocketService();
   final ScrollController _scrollController = ScrollController();
   
   auth.AuthClient? _client;
@@ -42,6 +49,7 @@ class _HomePageState extends State<HomePage> {
   final TextEditingController _searchController = TextEditingController();
   bool _isSearching = false;
   Timer? _searchDebounce;
+  bool _isSearchExpanded = false;
 
   @override
   void initState() {
@@ -53,6 +61,69 @@ class _HomePageState extends State<HomePage> {
     _loadProfileAndSignIn();
     // Clean old emails (older than 60 days)
     _cleanOldEmails();
+    // Initialize WebSocket connection
+    _initWebSocket();
+  }
+
+  Future<void> _initWebSocket() async {
+    try {
+      // Wait a bit for sign-in to complete
+      await Future.delayed(const Duration(seconds: 2));
+      
+      // Get user email from GoogleSignIn
+      final account = await _gmailService.getCurrentUser();
+      if (account != null && account.email.isNotEmpty) {
+        print('Initializing WebSocket for ${account.email}');
+        
+        // Connect to WebSocket (note: this requires a backend service)
+        // For now, this will fail gracefully if no backend is set up
+        try {
+          await _wsService.connect(account.email);
+          
+          // Listen for new email notifications
+          _wsService.messages.listen((message) {
+            if (message['type'] == 'new_email' && mounted) {
+              print('WebSocket: New email notification received');
+              // Show notification snackbar
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Row(
+                    children: [
+                      const Icon(Icons.mail, color: Colors.white),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'New email: ${message['subject'] ?? 'No subject'}',
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                  backgroundColor: Colors.blue.shade700,
+                  action: SnackBarAction(
+                    label: 'Refresh',
+                    textColor: Colors.white,
+                    onPressed: _refreshEmails,
+                  ),
+                  duration: const Duration(seconds: 5),
+                ),
+              );
+              // Auto-refresh emails
+              _refreshEmails();
+            } else if (message['type'] == 'error' && mounted) {
+              print('WebSocket error: ${message['message']}');
+            }
+          });
+          
+          // Subscribe to new email events
+          _wsService.subscribeToNewEmails(account.email);
+        } catch (e) {
+          print('WebSocket connection failed (this is expected without a backend): $e');
+        }
+      }
+    } catch (e) {
+      print('WebSocket initialization error: $e');
+    }
   }
 
   Future<void> _cleanOldEmails() async {
@@ -213,7 +284,7 @@ class _HomePageState extends State<HomePage> {
     
     // Check all emails for text matches
     for (var email in emails) {
-      final matched = _userProfile.matchesEmail(email.subject, email.body);
+      final matched = _userProfile.matchesEmail(email.subject, email.body, email.sender);
       if (matched) {
         email.isVeryImportant = true;
         matchedIds.add(email.id);
@@ -247,19 +318,9 @@ class _HomePageState extends State<HomePage> {
     
     // Show summary to user
     if (mounted && matchedIds.isNotEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('✓ Found ${matchedIds.length} emails matching your profile!'),
-          duration: const Duration(seconds: 5),
-          backgroundColor: Colors.green,
-          action: SnackBarAction(
-            label: 'View',
-            textColor: Colors.white,
-            onPressed: () {
-              setState(() => _currentFilter = 'very_important');
-            },
-          ),
-        ),
+      showSuccessAlert(
+        context,
+        '✓ Found ${matchedIds.length} emails matching your profile!',
       );
     }
   }
@@ -331,7 +392,7 @@ class _HomePageState extends State<HomePage> {
     // Then check text content for newly fetched emails
     for (var email in emails) {
       if (!email.isVeryImportant) { // Only check if not already marked
-        final matched = _userProfile.matchesEmail(email.subject, email.body);
+        final matched = _userProfile.matchesEmail(email.subject, email.body, email.sender);
         if (matched) {
           print('✓ Text match found for: ${email.subject}');
           email.isVeryImportant = true;
@@ -371,16 +432,18 @@ class _HomePageState extends State<HomePage> {
     // Only set if alarm hasn't been set before
     for (var email in emails) {
       if (email.isVeryImportant && !email.hasAlarm && !autoAlarmIds.contains(email.id)) {
-        final detectedTime = _alarmService.parseTimeFromText('${email.subject}\n${email.body}');
+        final parseResult = _alarmService.parseTimeFromText('${email.subject}\n${email.body}');
+        final detectedTime = parseResult?['finalDate'] as DateTime?;
         if (detectedTime != null && detectedTime.isAfter(DateTime.now().add(const Duration(minutes: 20)))) {
           // Set alarm 20 minutes before the detected time
           final alarmTime = detectedTime.subtract(const Duration(minutes: 20));
           try {
-            await _alarmService.scheduleAlarm(
-              label: '${email.subject} - ${email.sender}',
-              scheduledDate: alarmTime,
-              link: email.link,
+            await _inAppAlarmService.scheduleAlarm(
               emailId: email.id,
+              subject: email.subject,
+              sender: email.sender,
+              scheduledTime: alarmTime,
+              emailLink: email.link,
             );
             email.hasAlarm = true;
             email.alarmTimes = [alarmTime];
@@ -488,6 +551,7 @@ class _HomePageState extends State<HomePage> {
     _scrollController.dispose();
     _searchController.dispose();
     _searchDebounce?.cancel();
+    _wsService.dispose();
     super.dispose();
   }
 
@@ -613,12 +677,9 @@ class _HomePageState extends State<HomePage> {
       );
       
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('✓ Test notification shown immediately\n✓ Alarm set for ${DateFormat('h:mm:ss a').format(testTime)}\nWait 30 seconds...'),
-          duration: const Duration(seconds: 5),
-          backgroundColor: Colors.green,
-        ),
+      showSuccessAlert(
+        context,
+        '✓ Test notification shown\n✓ Alarm set for ${DateFormat('h:mm:ss a').format(testTime)}',
       );
       
       // Also check pending notifications
@@ -638,7 +699,21 @@ class _HomePageState extends State<HomePage> {
   Future<void> _addAlarm(EmailModel email) async {
     try {
       final text = '${email.subject}\n${email.body}';
-      final scheduled = _alarmService.parseTimeFromText(text);
+      final parseResult = _alarmService.parseTimeFromText(text);
+      
+      if (parseResult == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No valid time found in this email.'),
+            duration: Duration(seconds: 3),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        return;
+      }
+
+      final scheduled = parseResult['finalDate'] as DateTime?;
       
       if (scheduled == null) {
         if (!mounted) return;
@@ -652,12 +727,44 @@ class _HomePageState extends State<HomePage> {
         return;
       }
 
-      // Schedule the alarm
-      await _alarmService.scheduleAlarm(
-        label: email.subject,
-        scheduledDate: scheduled,
-        link: email.link,
+      // Show parser results dialog
+      if (!mounted) return;
+      
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => ParserResultsDialog(
+          parseResult: parseResult,
+          emailSubject: email.subject,
+          emailBody: email.body.length > 500 
+              ? '${email.body.substring(0, 500)}...' 
+              : email.body,
+          onConfirm: () => Navigator.of(context).pop(true),
+          onCancel: () => Navigator.of(context).pop(false),
+        ),
+      );
+
+      if (confirmed != true || !mounted) return;
+
+      // Check if the time is in the past
+      if (scheduled.isBefore(DateTime.now())) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Cannot set alarm for past time: ${DateFormat('MMM d, h:mm a').format(scheduled)}'),
+            duration: const Duration(seconds: 3),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+
+      // Schedule the alarm using InAppAlarmService
+      await _inAppAlarmService.scheduleAlarm(
         emailId: email.id,
+        subject: email.subject,
+        sender: email.sender,
+        scheduledTime: scheduled,
+        emailLink: email.link,
       );
 
       // Mark email as having alarm and set the scheduled time
@@ -670,15 +777,11 @@ class _HomePageState extends State<HomePage> {
         // Update in database
         await _emailDatabase.updateEmail(email);
 
-        final dateFormat = DateFormat('MMM d, yyyy \'at\' h:mm a');
+        final dateFormat = DateFormat('MMM d, h:mm a');
         final scheduledStr = dateFormat.format(scheduled);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('✓ Alarm scheduled for:\n$scheduledStr'),
-            duration: const Duration(seconds: 4),
-            backgroundColor: Colors.green,
-          ),
-        );
+        
+        // Show animated success alert bar
+        showSuccessAlert(context, 'Alarm set for $scheduledStr');
       }
     } catch (e) {
       if (!mounted) return;
@@ -693,20 +796,29 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _removeAlarm(EmailModel email) async {
-    if (mounted) {
-      setState(() {
-        email.hasAlarm = false;
-        email.alarmTimes = [];
-      });
+    try {
+      // Cancel the in-app alarm
+      await _inAppAlarmService.cancelAlarm(email.id);
       
-      // Update in database
-      await _emailDatabase.updateEmail(email);
+      if (mounted) {
+        setState(() {
+          email.hasAlarm = false;
+          email.alarmTimes = [];
+        });
+        
+        // Update in database
+        await _emailDatabase.updateEmail(email);
 
+        // Show animated success alert bar
+        showSuccessAlert(context, 'Alarm removed successfully');
+      }
+    } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('✓ Alarm removed\nNote: Please also delete the alarm from your Clock app'),
-          duration: Duration(seconds: 4),
-          backgroundColor: Colors.orange,
+        SnackBar(
+          content: Text('Error removing alarm: $e'),
+          duration: const Duration(seconds: 3),
+          backgroundColor: Colors.red,
         ),
       );
     }
@@ -739,7 +851,8 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _editAlarm(EmailModel email) async {
     final text = '${email.subject}\n${email.body}';
-    final detectedTime = _alarmService.parseTimeFromText(text);
+    final parseResult = _alarmService.parseTimeFromText(text);
+    final detectedTime = parseResult?['finalDate'] as DateTime?;
     
     final selectedDate = await showDatePicker(
       context: context,
@@ -765,11 +878,12 @@ class _HomePageState extends State<HomePage> {
       selectedTime.minute,
     );
 
-    await _alarmService.scheduleAlarm(
-      label: '${email.subject} - ${email.sender}',
-      scheduledDate: scheduledDate,
-      link: email.link,
+    await _inAppAlarmService.scheduleAlarm(
       emailId: email.id,
+      subject: email.subject,
+      sender: email.sender,
+      scheduledTime: scheduledDate,
+      emailLink: email.link,
     );
 
     // Mark email as having alarm and replace with the new scheduled time
@@ -778,6 +892,9 @@ class _HomePageState extends State<HomePage> {
       // Replace the alarm time instead of adding
       email.alarmTimes = [scheduledDate];
     });
+    
+    // Update in database
+    await _emailDatabase.updateEmail(email);
 
     if (!mounted) return;
     final dateFormat = DateFormat('MMM d, yyyy \'at\' h:mm a');
@@ -863,6 +980,32 @@ class _HomePageState extends State<HomePage> {
             ],
           ),
           actions: [
+            // Manage Alarms Button
+            IconButton(
+              icon: Badge(
+                isLabelVisible: _emails.where((e) => e.hasAlarm).isNotEmpty,
+                label: Text(
+                  '${_emails.where((e) => e.hasAlarm).length}',
+                  style: const TextStyle(fontSize: 10),
+                ),
+                child: const Icon(Icons.alarm),
+              ),
+              onPressed: () async {
+                final result = await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const AlarmManagementScreen(),
+                  ),
+                );
+                
+                // Refresh emails if alarms were modified
+                if (result == true && mounted) {
+                  await _loadCachedEmails();
+                  setState(() {});
+                }
+              },
+              tooltip: 'Manage Alarms',
+            ),
             IconButton(
               icon: const Icon(Icons.person),
               onPressed: _showProfileSettings,
@@ -1139,22 +1282,32 @@ class _HomePageState extends State<HomePage> {
                                             if (email.hasAlarm)
                                               Container(
                                                 margin: const EdgeInsets.only(right: 8),
-                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                                                 decoration: BoxDecoration(
-                                                  color: Colors.green,
-                                                  borderRadius: BorderRadius.circular(12),
+                                                  gradient: LinearGradient(
+                                                    colors: [Colors.green.shade400, Colors.green.shade600],
+                                                  ),
+                                                  borderRadius: BorderRadius.circular(16),
+                                                  boxShadow: [
+                                                    BoxShadow(
+                                                      color: Colors.green.withOpacity(0.3),
+                                                      blurRadius: 4,
+                                                      offset: const Offset(0, 2),
+                                                    ),
+                                                  ],
                                                 ),
                                                 child: const Row(
                                                   mainAxisSize: MainAxisSize.min,
                                                   children: [
-                                                    Icon(Icons.alarm, size: 14, color: Colors.white),
-                                                    SizedBox(width: 4),
+                                                    Icon(Icons.alarm, size: 16, color: Colors.white),
+                                                    SizedBox(width: 6),
                                                     Text(
                                                       'Alarm Set',
                                                       style: TextStyle(
                                                         color: Colors.white,
-                                                        fontSize: 11,
+                                                        fontSize: 12,
                                                         fontWeight: FontWeight.bold,
+                                                        letterSpacing: 0.3,
                                                       ),
                                                     ),
                                                   ],
@@ -1269,30 +1422,38 @@ class _HomePageState extends State<HomePage> {
                                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                           crossAxisAlignment: CrossAxisAlignment.end,
                                           children: [
-                                            // Show alarm times if any (bottom-left)
+                                            // Show alarm times as pill badges (bottom-left)
                                             if (email.alarmTimes.isNotEmpty)
                                               Expanded(
-                                                child: Container(
-                                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.green.shade50,
-                                                    borderRadius: BorderRadius.circular(6),
-                                                    border: Border.all(color: Colors.green.shade300, width: 1),
-                                                  ),
-                                                  child: Column(
-                                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      ...email.alarmTimes.map((time) => Text(
-                                                        '⏰ ${DateFormat('MMM d, h:mm a').format(time)}',
-                                                        style: TextStyle(
-                                                          fontSize: 11,
-                                                          color: Colors.green.shade800,
-                                                          fontWeight: FontWeight.w500,
+                                                child: Wrap(
+                                                  spacing: 6,
+                                                  runSpacing: 6,
+                                                  children: email.alarmTimes.map((time) => Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                                    decoration: BoxDecoration(
+                                                      gradient: LinearGradient(
+                                                        colors: [Colors.green.shade100, Colors.green.shade200],
+                                                      ),
+                                                      borderRadius: BorderRadius.circular(20),
+                                                      border: Border.all(color: Colors.green.shade400, width: 1.5),
+                                                    ),
+                                                    child: Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        Icon(Icons.access_time, size: 14, color: Colors.green.shade800),
+                                                        const SizedBox(width: 4),
+                                                        Text(
+                                                          DateFormat('MMM d, h:mm a').format(time),
+                                                          style: TextStyle(
+                                                            fontSize: 11,
+                                                            color: Colors.green.shade900,
+                                                            fontWeight: FontWeight.bold,
+                                                            letterSpacing: 0.2,
+                                                          ),
                                                         ),
-                                                      )),
-                                                    ],
-                                                  ),
+                                                      ],
+                                                    ),
+                                                  )).toList(),
                                                 ),
                                               )
                                             else
@@ -1319,10 +1480,15 @@ class _HomePageState extends State<HomePage> {
                                                 if (email.hasAlarm)
                                                   OutlinedButton.icon(
                                                     onPressed: () => _editAlarm(email),
-                                                    icon: const Icon(Icons.edit_calendar, size: 14),
-                                                    label: const Text('Edit', style: TextStyle(fontSize: 11)),
+                                                    icon: const Icon(Icons.edit_calendar, size: 16),
+                                                    label: const Text('Edit', style: TextStyle(fontSize: 12)),
                                                     style: OutlinedButton.styleFrom(
-                                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                                      side: BorderSide(color: Colors.blue.shade400, width: 1.5),
+                                                      foregroundColor: Colors.blue.shade700,
+                                                      shape: RoundedRectangleBorder(
+                                                        borderRadius: BorderRadius.circular(20),
+                                                      ),
                                                     ),
                                                   ),
                                                 ElevatedButton.icon(
@@ -1331,14 +1497,20 @@ class _HomePageState extends State<HomePage> {
                                                     : () => _addAlarm(email),
                                                   icon: Icon(
                                                     email.hasAlarm ? Icons.alarm_off : Icons.alarm_add,
-                                                    size: 14,
+                                                    size: 16,
                                                   ),
                                                   label: Text(
                                                     email.hasAlarm ? 'Remove' : 'Add Alarm',
-                                                    style: const TextStyle(fontSize: 11),
+                                                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                                                   ),
                                                   style: ElevatedButton.styleFrom(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                                    backgroundColor: email.hasAlarm ? Colors.red.shade400 : Colors.amber.shade600,
+                                                    foregroundColor: Colors.white,
+                                                    elevation: 2,
+                                                    shape: RoundedRectangleBorder(
+                                                      borderRadius: BorderRadius.circular(20),
+                                                    ),
                                                   ),
                                                 ),
                                               ],
@@ -1353,102 +1525,125 @@ class _HomePageState extends State<HomePage> {
                             },
                           ),
             ),
-            // Floating Search Bar with liquid glassy effect
+            // Animated Search FAB (expands from circular to full-width bar)
             if (_emails.isNotEmpty)
               Positioned(
                 bottom: 20,
                 left: 20,
-                right: 80,
-                child: Container(
+                right: _isSearchExpanded ? 80 : null,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 500),
+                  curve: Curves.easeOutCubic,
+                  width: _isSearchExpanded ? null : 60,
+                  height: 60,
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(30),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        blurRadius: 20,
-                        spreadRadius: 5,
+                        color: Colors.black.withOpacity(0.15),
+                        blurRadius: 24,
+                        spreadRadius: 2,
+                        offset: const Offset(0, 4),
                       ),
                     ],
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(30),
                     child: BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                      filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
                       child: Container(
                         decoration: BoxDecoration(
                           gradient: LinearGradient(
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
                             colors: [
-                              Colors.white.withOpacity(0.7),
-                              Colors.white.withOpacity(0.5),
+                              Colors.white.withOpacity(0.75),
+                              Colors.white.withOpacity(0.6),
                             ],
                           ),
                           borderRadius: BorderRadius.circular(30),
                           border: Border.all(
-                            color: Colors.white.withOpacity(0.8),
-                            width: 1.5,
+                            color: Colors.white.withOpacity(0.9),
+                            width: 1.8,
                           ),
                         ),
-                        child: TextField(
-                          controller: _searchController,
-                          onChanged: (value) {
-                            // Debounced DB-backed search
-                            _searchDebounce?.cancel();
-                            setState(() {
-                              _searchQuery = value;
-                            });
+                        child: _isSearchExpanded
+                            ? TextField(
+                                controller: _searchController,
+                                autofocus: true,
+                                onChanged: (value) {
+                                  // Debounced DB-backed search
+                                  _searchDebounce?.cancel();
+                                  setState(() {
+                                    _searchQuery = value;
+                                  });
 
-                            if (value.trim().isEmpty) {
-                              // Clear results immediately
-                              setState(() {
-                                _searchResults = <EmailModel>[];
-                                _isSearching = false;
-                              });
-                              return;
-                            }
+                                  if (value.trim().isEmpty) {
+                                    // Clear results immediately
+                                    setState(() {
+                                      _searchResults = <EmailModel>[];
+                                      _isSearching = false;
+                                    });
+                                    return;
+                                  }
 
-                            _searchDebounce = Timer(const Duration(milliseconds: 300), () {
-                              _performSearch(value);
-                            });
-                          },
-                          decoration: InputDecoration(
-                            hintText: 'Search all emails...',
-                            hintStyle: TextStyle(
-                              color: Colors.grey[600],
-                              fontSize: 16,
-                            ),
-                            prefixIcon: Icon(
-                              Icons.search,
-                              color: Colors.grey[700],
-                              size: 24,
-                            ),
-                            suffixIcon: _searchQuery.isNotEmpty
-                                ? IconButton(
+                                  _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+                                    _performSearch(value);
+                                  });
+                                },
+                                decoration: InputDecoration(
+                                  hintText: 'Search all emails...',
+                                  hintStyle: TextStyle(
+                                    color: Colors.grey[600],
+                                    fontSize: 16,
+                                  ),
+                                  prefixIcon: Icon(
+                                    Icons.search,
+                                    color: Colors.grey[700],
+                                    size: 24,
+                                  ),
+                                  suffixIcon: IconButton(
                                     icon: Icon(
-                                      Icons.clear,
+                                      Icons.close_rounded,
                                       color: Colors.grey[700],
+                                      size: 24,
                                     ),
                                     onPressed: () {
                                       setState(() {
+                                        _isSearchExpanded = false;
                                         _searchController.clear();
                                         _searchQuery = '';
                                         _searchResults = <EmailModel>[];
+                                        _isSearching = false;
                                       });
                                     },
-                                  )
-                                : null,
-                            border: InputBorder.none,
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 20,
-                              vertical: 15,
-                            ),
-                          ),
-                          style: const TextStyle(
-                            fontSize: 16,
-                            color: Colors.black87,
-                          ),
-                        ),
+                                  ),
+                                  border: InputBorder.none,
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                    vertical: 18,
+                                  ),
+                                ),
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  color: Colors.black87,
+                                ),
+                              )
+                            : Center(
+                                child: IconButton(
+                                  icon: Icon(
+                                    Icons.search,
+                                    color: Colors.grey[700],
+                                    size: 28,
+                                  ),
+                                  onPressed: () {
+                                    setState(() {
+                                      _isSearchExpanded = true;
+                                    });
+                                  },
+                                  tooltip: 'Search emails',
+                                ),
+                              ),
                       ),
                     ),
                   ),

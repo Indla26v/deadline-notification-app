@@ -29,9 +29,14 @@ dependencies:
   excel: ^4.0.3
   sqflite: ^2.3.0
   flutter_html: ^3.0.0-beta.2
+  audioplayers: ^6.0.0
+  web_socket_channel: ^2.4.0
 
 dev_dependencies:
   flutter_launcher_icons: ^0.13.1
+  flutter_test:
+    sdk: flutter
+  test: ^1.25.0
 
 flutter_launcher_icons:
   android: true
@@ -44,4 +49,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/client_secret.json
+    - assets/alarm_sound.mp3
 

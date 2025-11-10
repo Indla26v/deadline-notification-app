@@ -4,6 +4,7 @@ import 'screens/home_page.dart';
 import 'screens/email_detail_screen.dart';
 import 'services/background_email_service.dart';
 import 'services/alarm_service.dart';
+import 'services/in_app_alarm_service.dart';
 import 'services/email_database.dart';
 
 // Global navigator key for navigation from anywhere
@@ -13,10 +14,15 @@ final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterL
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
+  // Initialize in-app alarm service
+  await InAppAlarmService().initialize();
+  
   // Initialize background email checking
   await BackgroundEmailService.initialize();
   await BackgroundEmailService.registerPeriodicTask();
-  await BackgroundEmailService.registerOneTimeTask(); // Immediate check
+  // REMOVED: registerOneTimeTask() to prevent vibration on app launch
+  // The immediate check was causing notification vibrations when app starts
+  // Background sync will happen after 15 minutes instead
   
   // Initialize notifications for background emails
   const AndroidInitializationSettings androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -57,6 +63,9 @@ void main() async {
       print('Email not found in database or no context available');
     }
   };
+  
+  // Run initial database sync after services are initialized
+  await InAppAlarmService().syncWithDatabase();
   
   runApp(MailAlarmApp());
 }

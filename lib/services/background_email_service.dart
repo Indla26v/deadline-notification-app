@@ -74,7 +74,7 @@ Future<void> _checkForNewEmails() async {
         // Check if email is very important (contains user profile)
         bool isVeryImportant = false;
         if (userProfile.isComplete) {
-          isVeryImportant = userProfile.matchesEmail(latestEmail.subject, latestEmail.body);
+          isVeryImportant = userProfile.matchesEmail(latestEmail.subject, latestEmail.body, latestEmail.sender);
           
           // Also check Excel attachments if any
           if (!isVeryImportant && latestEmail.attachments.isNotEmpty) {
@@ -100,6 +100,7 @@ Future<void> _checkForNewEmails() async {
           latestEmail.id,
           latestEmail.sender, 
           latestEmail.subject,
+          latestEmail.snippet.isNotEmpty ? latestEmail.snippet : latestEmail.body,
           isVeryImportant,
         );
         
@@ -192,33 +193,49 @@ Future<bool> _checkExcelForProfile(
   }
 }
 
-Future<void> _showNewEmailNotification(String emailId, String sender, String subject, bool isVeryImportant) async {
+Future<void> _showNewEmailNotification(String emailId, String sender, String subject, String body, bool isVeryImportant) async {
   final FlutterLocalNotificationsPlugin notifications = FlutterLocalNotificationsPlugin();
   
   const AndroidInitializationSettings androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
   const InitializationSettings initSettings = InitializationSettings(android: androidSettings);
   await notifications.initialize(initSettings);
   
+  // Create Outlook-style expandable notification
+  final BigTextStyleInformation bigTextStyle = BigTextStyleInformation(
+    body,
+    htmlFormatBigText: false,
+    contentTitle: subject,
+    htmlFormatContentTitle: false,
+    summaryText: sender,
+    htmlFormatSummaryText: false,
+  );
+  
   final AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
     isVeryImportant ? 'very_important_email_channel' : 'new_email_channel',
-    isVeryImportant ? 'Very Important Emails' : 'New Emails',
+    isVeryImportant ? 'Bell - Very Important' : 'Bell - New Emails',
     channelDescription: isVeryImportant 
         ? 'Notifications for emails containing your profile information'
         : 'Notifications for new emails',
     importance: isVeryImportant ? Importance.max : Importance.high,
     priority: isVeryImportant ? Priority.max : Priority.high,
+    styleInformation: bigTextStyle,
     icon: '@mipmap/ic_launcher',
+    largeIcon: const DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
     color: isVeryImportant ? const Color(0xFFFF0000) : const Color(0xFFFFC107), // Red for important, Bell gold for normal
     playSound: true,
-    enableVibration: true,
+    enableVibration: false, // Disable vibration for background notifications
+    when: DateTime.now().millisecondsSinceEpoch,
+    showWhen: true,
+    category: AndroidNotificationCategory.email,
+    visibility: NotificationVisibility.private,
   );
   
   final NotificationDetails notificationDetails = NotificationDetails(android: androidDetails);
   
   await notifications.show(
     DateTime.now().millisecondsSinceEpoch.remainder(100000),
-    isVeryImportant ? '⭐ Bell - VERY IMPORTANT' : '🔔 Bell - New Email',
-    isVeryImportant ? 'From $sender: $subject' : '$sender: $subject',
+    isVeryImportant ? '⭐ Bell - New Email' : 'Bell • Now 🔔',
+    subject,
     notificationDetails,
     payload: emailId, // Add email ID for navigation
   );
