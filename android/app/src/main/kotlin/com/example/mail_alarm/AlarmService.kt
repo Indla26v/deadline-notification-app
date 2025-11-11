@@ -59,12 +59,12 @@ class AlarmService : Service() {
             
             Log.d("AlarmService", "Alarm is now ringing")
             
-            // Auto-stop alarm after 90 seconds
+            // Auto-stop alarm after 60 seconds
             stopAlarmRunnable = Runnable {
-                Log.d("AlarmService", "90 seconds elapsed, stopping alarm")
+                Log.d("AlarmService", "60 seconds elapsed, stopping alarm")
                 stopSelf()
             }
-            handler.postDelayed(stopAlarmRunnable!!, 90000) // 90 seconds
+            handler.postDelayed(stopAlarmRunnable!!, 60000) // 60 seconds
             
         } catch (e: Exception) {
             Log.e("AlarmService", "Error in onStartCommand", e)

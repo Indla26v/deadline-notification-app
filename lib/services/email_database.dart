@@ -2,6 +2,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'dart:convert';
 import '../models/email_model.dart';
+import '../utils/constants.dart';
 
 class EmailDatabase {
   static final EmailDatabase instance = EmailDatabase._init();
@@ -62,10 +63,14 @@ class EmailDatabase {
       )
     ''');
 
-    // Create index for faster queries
-    await db.execute('CREATE INDEX idx_receivedDate ON emails(receivedDate)');
-    await db.execute('CREATE INDEX idx_isVeryImportant ON emails(isVeryImportant)');
-    await db.execute('CREATE INDEX idx_hasAlarm ON emails(hasAlarm)');
+    // Create indexes for faster queries
+    await db.execute('CREATE INDEX idx_receivedDate ON emails(receivedDate DESC)');
+    await db.execute('CREATE INDEX idx_isVeryImportant ON emails(isVeryImportant) WHERE isVeryImportant = 1');
+    await db.execute('CREATE INDEX idx_hasAlarm ON emails(hasAlarm) WHERE hasAlarm = 1');
+    await db.execute('CREATE INDEX idx_isUnread ON emails(isUnread) WHERE isUnread = 1');
+    // Full-text search index for better search performance
+    await db.execute('CREATE INDEX idx_subject_lower ON emails(lower(subject))');
+    await db.execute('CREATE INDEX idx_sender_lower ON emails(lower(sender))');
   }
 
   Future<void> insertEmail(EmailModel email) async {
@@ -79,18 +84,27 @@ class EmailDatabase {
   }
 
   Future<void> insertEmails(List<EmailModel> emails) async {
+    if (emails.isEmpty) return;
+    
     final db = await database;
-    final batch = db.batch();
     
-    for (final email in emails) {
-      batch.insert(
-        'emails',
-        _emailToMap(email),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+    // Process in chunks for better performance with large datasets
+    const chunkSize = DatabaseConstants.batchInsertSize;
+    for (var i = 0; i < emails.length; i += chunkSize) {
+      final end = (i + chunkSize < emails.length) ? i + chunkSize : emails.length;
+      final chunk = emails.sublist(i, end);
+      
+      final batch = db.batch();
+      for (final email in chunk) {
+        batch.insert(
+          'emails',
+          _emailToMap(email),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+      
+      await batch.commit(noResult: true);
     }
-    
-    await batch.commit(noResult: true);
   }
 
   Future<List<EmailModel>> getAllEmails({int? limit}) async {
@@ -155,19 +169,29 @@ class EmailDatabase {
 
   /// Search emails across subject, body, sender and snippet.
   /// Performs a case-insensitive LIKE search and returns results ordered by receivedDate DESC.
+  /// Optimized with indexed columns for better performance.
   Future<List<EmailModel>> searchEmails(String query, {int? limit}) async {
+    if (query.trim().isEmpty) return [];
+    
     final db = await database;
     final like = '%${query.replaceAll("%", "\\%").replaceAll("_", "\\_").toLowerCase()}%';
 
+    // Optimized query: search indexed columns first, then body
     final result = await db.rawQuery('''
       SELECT * FROM emails
       WHERE lower(subject) LIKE ?
-         OR lower(body) LIKE ?
          OR lower(sender) LIKE ?
          OR lower(snippet) LIKE ?
-      ORDER BY receivedDate DESC
+         OR lower(body) LIKE ?
+      ORDER BY 
+        CASE 
+          WHEN lower(subject) LIKE ? THEN 1
+          WHEN lower(sender) LIKE ? THEN 2
+          ELSE 3
+        END,
+        receivedDate DESC
       ${limit != null ? 'LIMIT $limit' : ''}
-    ''', [like, like, like, like]);
+    ''', [like, like, like, like, like, like]);
 
     return result.map((json) => _emailFromMap(json)).toList();
   }

@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'dart:ui' show Color;
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:intl/intl.dart';
@@ -10,6 +11,35 @@ import 'package:android_intent_plus/flag.dart';
 
 class AlarmService {
   final FlutterLocalNotificationsPlugin _notificationsPlugin = FlutterLocalNotificationsPlugin();
+  
+  // Cache compiled regex patterns for better performance
+  static final _cachedStartTimePatterns = <RegExp>[
+    RegExp(r"(?:from|starting\s+from|begins\s+on)\s+(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:(\d{4})\s+)?(?:(\d{1,2})[:\.](\d{2})\s*(am|pm)?)?", caseSensitive: false),
+    RegExp(r"(?:from|starting\s+from|begins\s+on)\s+(\d{1,2})(?:st|nd|rd|th)?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(?:(\d{4})\s+)?(?:(\d{1,2})[:\.](\d{2})\s*(am|pm)?)?", caseSensitive: false),
+    RegExp(r"(?:from|starting\s+from|scheduled\s+from)\s+(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4})(?:\s+(?:at\s+)?(\d{1,2})[:\.](\d{2})\s*(am|pm)?)?", caseSensitive: false),
+  ];
+  
+  static final _cachedDateTimePatterns = <RegExp>[
+    RegExp(r"(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:(\d{4})\s+)?(?:at|by)\s+(?:12\s*)?(noon|midnight)", caseSensitive: false),
+    RegExp(r"(\d{1,2})(?:st|nd|rd|th)?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(?:(\d{4})\s+)?(?:at|by)\s+(?:12\s*)?(noon|midnight)", caseSensitive: false),
+    RegExp(r"(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4})\s*@\s*(\d{1,2})[:\.](\d{2})\s*(am|pm)?", caseSensitive: false),
+    RegExp(r"(?:on\s+)?(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4}).*?(?:at|by)\s+(\d{1,2})[:\.\s](\d{2})?\s*(am|pm)?", caseSensitive: false, dotAll: true),
+    RegExp(r"(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4})\s+(\d{1,2})[:\.\s](\d{2})?\s*(am|pm)?", caseSensitive: false),
+    RegExp(r"DATE:\s*(\d{1,2})(?:st|nd|rd|th)?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*.*?TIME:\s*(\d{1,2})[:\.](\d{2})\s*(am|pm)?", caseSensitive: false, multiLine: true, dotAll: true),
+    RegExp(r"(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:(\d{4})\s+)?(?:at|by)\s+(\d{1,2})[:\.\s](\d{2})?\s*(am|pm)?", caseSensitive: false),
+    RegExp(r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(?:(\d{4})\s+)?(?:at|by)\s+(\d{1,2})[:\.\s](\d{2})?\s*(am|pm)?", caseSensitive: false),
+    RegExp(r"on\s+(\d{1,2})(?:st|nd|rd|th)?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(?:(\d{4})\s+)?(?:at|by)\s+(\d{1,2})[:\.\s](\d{2})?\s*(am|pm)?", caseSensitive: false),
+    RegExp(r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s*(?:(\d{4})\s*)?(\d{1,2})[:\.]?(\d{2})?\s*(am|pm)?", caseSensitive: false),
+    RegExp(r"(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s*(?:(\d{4})\s*)?(\d{1,2})[:\.]?(\d{2})?\s*(am|pm)?", caseSensitive: false),
+    RegExp(r"(\d{1,2})(?:st|nd|rd|th)?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s*(?:(\d{4})\s*)?(\d{1,2})[:\.]?(\d{2})?\s*(am|pm)?", caseSensitive: false),
+    RegExp(r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s*(\d{1,2})\s+(\d{1,2})[:\.](\d{2})\s*(am|pm)?", caseSensitive: false),
+    RegExp(r"(\d{1,2})(?:st|nd|rd|th)?\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d{1,2})[:\.](\d{2})\s*(am|pm)?", caseSensitive: false),
+  ];
+  
+  static final _cachedTimePatterns = <RegExp>[
+    RegExp(r"\b([01]?\d|2[0-3]):([0-5]\d)\b"),
+    RegExp(r"(\d{1,2}):?(\d{2})?\s*(AM|PM|am|pm)", caseSensitive: false),
+  ];
 
   Future<void> initialize() async {
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -23,6 +53,64 @@ class AlarmService {
       tz.setLocalLocation(tz.getLocation('Asia/Kolkata'));
     } catch (e) {
       print('Error initializing timezone: $e');
+    }
+
+    // Delete old notification channels and recreate them to reset vibration settings
+    final androidImpl = _notificationsPlugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    if (androidImpl != null) {
+      // 1. Delete all known channels
+      try {
+        await androidImpl.deleteNotificationChannel('test_channel');
+        await androidImpl.deleteNotificationChannel('confirmation_channel');
+        await androidImpl.deleteNotificationChannel('bell_new_emails');
+        await androidImpl.deleteNotificationChannel('bell_very_important');
+        print('✓ Deleted old notification channels');
+      } catch (e) {
+        print('Note: Could not delete notification channels (may not exist): $e');
+      }
+
+      // 2. Create new channels with vibration explicitly disabled
+      final List<AndroidNotificationChannel> channels = [
+        const AndroidNotificationChannel(
+          'test_channel',
+          'Bell - Test',
+          description: 'Test notifications to verify notifications work.',
+          importance: Importance.defaultImportance, // Low priority
+          playSound: false,
+          enableVibration: false,
+        ),
+        const AndroidNotificationChannel(
+          'confirmation_channel',
+          'Bell - Confirmations',
+          description: 'Confirmation notifications when an alarm is set.',
+          importance: Importance.defaultImportance,
+          playSound: false,
+          enableVibration: false,
+        ),
+        const AndroidNotificationChannel(
+          'bell_new_emails',
+          'Bell - New Email Alerts',
+          description: 'Notifications for newly fetched emails.',
+          importance: Importance.high,
+          playSound: true, // Sound on for new emails
+          enableVibration: false, // VIBRATION OFF
+        ),
+        const AndroidNotificationChannel(
+          'bell_very_important',
+          'Bell - Ringing Alarms',
+          description: 'The channel for actual ringing alarms.',
+          importance: Importance.max,
+          playSound: true, // This will be a custom sound
+          enableVibration: true, // VIBRATION ON (Only for this channel)
+          sound: RawResourceAndroidNotificationSound('alarm_sound'),
+        ),
+      ];
+
+      // 3. Register the new channels with the system
+      for (final channel in channels) {
+        await androidImpl.createNotificationChannel(channel);
+      }
+      print('✓ Created/updated notification channels with correct vibration settings.');
     }
 
     await _notificationsPlugin.initialize(
@@ -232,15 +320,9 @@ class AlarmService {
     // Look for "from", "starting", "begins", etc.
     // =========================================================================
     print('--- PASS 1A: Searching for START time patterns (from/starting/begins) ---');
-    final startTimePatterns = <RegExp>[
-      // "from 31st October 2025" or "from 31st Oct 2025 9:00 am"
-      RegExp(r"(?:from|starting\s+from|begins\s+on)\s+(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:(\d{4})\s+)?(?:(\d{1,2})[:\.](\d{2})\s*(am|pm)?)?", caseSensitive: false),
-      RegExp(r"(?:from|starting\s+from|begins\s+on)\s+(\d{1,2})(?:st|nd|rd|th)?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(?:(\d{4})\s+)?(?:(\d{1,2})[:\.](\d{2})\s*(am|pm)?)?", caseSensitive: false),
-      // "Scheduled from 31-10-2025" or "from 31/10/2025"
-      RegExp(r"(?:from|starting\s+from|scheduled\s+from)\s+(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4})(?:\s+(?:at\s+)?(\d{1,2})[:\.](\d{2})\s*(am|pm)?)?", caseSensitive: false),
-    ];
     
-    _parseMatches(text, startTimePatterns, candidates, candidatesLog, 'start-time');
+    // Use cached regex patterns for better performance
+    _parseMatches(text, _cachedStartTimePatterns, candidates, candidatesLog, 'start-time');
     
     // If we found start times, use the EARLIEST one (first to start)
     var futureCandidates = candidates.where((c) => (c['date'] as DateTime).isAfter(now)).toList();
@@ -263,37 +345,9 @@ class AlarmService {
     // PASS 1B: Search for full DATE + TIME patterns (general event times)
     // =========================================================================
     print('--- PASS 1B: Searching for general Date + Time patterns ---');
-    final dateTimePatterns = <RegExp>[
-      // SPECIAL: Handle Noon/Midnight with ordinal dates: "3rd November 2025 by 12 Noon"
-      RegExp(r"(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:(\d{4})\s+)?(?:at|by)\s+(?:12\s*)?(noon|midnight)", caseSensitive: false),
-      RegExp(r"(\d{1,2})(?:st|nd|rd|th)?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(?:(\d{4})\s+)?(?:at|by)\s+(?:12\s*)?(noon|midnight)", caseSensitive: false),
-      // PRIORITY: Numeric dates with @ symbol: "*31-10-2025 @ 8.00PM*"
-      RegExp(r"(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4})\s*@\s*(\d{1,2})[:\.](\d{2})\s*(am|pm)?", caseSensitive: false),
-      // PRIORITY: Numeric date with at/by later in the text: "04.11.2025 ... by 8:30 am" or "on 04/11/2025 at 8:30 am" or "02.11.2025 at chennai campus,by 8:30 am"
-      RegExp(r"(?:on\s+)?(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4}).*?(?:at|by)\s+(\d{1,2})[:\.\s](\d{2})?\s*(am|pm)?", caseSensitive: false, dotAll: true),
-      // PRIORITY: Numeric date immediately followed by time: "04-11-2025 8:30 am"
-      RegExp(r"(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4})\s+(\d{1,2})[:\.\s](\d{2})?\s*(am|pm)?", caseSensitive: false),
-      // Matches: "DATE: 14TH NOV" followed by "TIME: 6:00 PM" (multiline with DATE and TIME keywords)
-      RegExp(r"DATE:\s*(\d{1,2})(?:st|nd|rd|th)?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*.*?TIME:\s*(\d{1,2})[:\.](\d{2})\s*(am|pm)?", caseSensitive: false, multiLine: true, dotAll: true),
-      // Matches: "8th November at 8:30 am", "30th October 2026 at 10:30 AM", "3rd November 2025 by 8.30 am"
-      RegExp(r"(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:(\d{4})\s+)?(?:at|by)\s+(\d{1,2})[:\.\s](\d{2})?\s*(am|pm)?", caseSensitive: false),
-      // Matches: "November 8 at 8:30 am", "October 30, 2026 by 10:30 AM"
-      RegExp(r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(?:(\d{4})\s+)?(?:at|by)\s+(\d{1,2})[:\.\s](\d{2})?\s*(am|pm)?", caseSensitive: false),
-      // Matches: "on 8th Nov at 8:30 am" or "on 8th Nov by 8:30 am"
-      RegExp(r"on\s+(\d{1,2})(?:st|nd|rd|th)?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(?:(\d{4})\s+)?(?:at|by)\s+(\d{1,2})[:\.\s](\d{2})?\s*(am|pm)?", caseSensitive: false),
-      // Matches without the 'at' keyword: "Nov 1, 12:00 PM" or "November 1 12:00 PM"
-      RegExp(r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s*(?:(\d{4})\s*)?(\d{1,2})[:\.]?(\d{2})?\s*(am|pm)?", caseSensitive: false),
-      // Matches without the 'at' keyword WITH ORDINALS: "1st November 2025 5.45 pm" or "3rd December 2025 6pm"
-      RegExp(r"(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s*(?:(\d{4})\s*)?(\d{1,2})[:\.]?(\d{2})?\s*(am|pm)?", caseSensitive: false),
-      // Matches without the 'at' keyword: "31st October 2025 4.00 pm" or "31 Oct 4 pm"
-      RegExp(r"(\d{1,2})(?:st|nd|rd|th)?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s*(?:(\d{4})\s*)?(\d{1,2})[:\.]?(\d{2})?\s*(am|pm)?", caseSensitive: false),
-      // Matches: "nov14 6:00pm", "Nov 14 6:00 PM", "November14 6:00pm"
-      RegExp(r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s*(\d{1,2})\s+(\d{1,2})[:\.](\d{2})\s*(am|pm)?", caseSensitive: false),
-      // Matches: "14nov 6:00pm", "14 November 6:00pm", "14th Nov 6:00pm"
-      RegExp(r"(\d{1,2})(?:st|nd|rd|th)?\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d{1,2})[:\.](\d{2})\s*(am|pm)?", caseSensitive: false),
-    ];
-
-    _parseMatches(text, dateTimePatterns, candidates, candidatesLog, 'date-time');
+    
+    // Use cached regex patterns for better performance
+    _parseMatches(text, _cachedDateTimePatterns, candidates, candidatesLog, 'date-time');
 
     // After Pass 1B, check if we have any valid future candidates.
     futureCandidates = candidates.where((c) => (c['date'] as DateTime).isAfter(now)).toList();
@@ -313,15 +367,10 @@ class AlarmService {
     // PASS 2: If no full date-time found, search for time-only patterns.
     // =========================================================================
     print('\n--- PASS 2: No definitive date found. Searching for time-only patterns. ---');
-    final timePatterns = <RegExp>[
-      // Matches: "13:52", "09:30", "18:25" (24-hour format)
-      RegExp(r"\b([01]?\d|2[0-3]):([0-5]\d)\b"),
-      // Matches: "1:52 PM", "10:30 AM", "3 PM" (12-hour format with AM/PM)
-      RegExp(r"(\d{1,2}):?(\d{2})?\s*(AM|PM|am|pm)", caseSensitive: false),
-    ];
-
-    for (var i = 0; i < timePatterns.length; i++) {
-      final pattern = timePatterns[i];
+    
+    // Use cached regex patterns for better performance
+    for (var i = 0; i < _cachedTimePatterns.length; i++) {
+      final pattern = _cachedTimePatterns[i];
       final matches = pattern.allMatches(text);
       for (final match in matches) {
         try {

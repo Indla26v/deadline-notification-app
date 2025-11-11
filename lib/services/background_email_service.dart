@@ -9,9 +9,13 @@ import 'gmail_service.dart';
 import 'profile_service.dart';
 import 'email_database.dart';
 import '../models/user_profile.dart';
+import '../utils/constants.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 const String emailCheckTaskName = 'emailCheckTask';
+
+// Global lock to prevent concurrent executions
+bool _isCheckingEmails = false;
 
 @pragma('vm:entry-point')
 void callbackDispatcher() {
@@ -27,8 +31,24 @@ void callbackDispatcher() {
 }
 
 Future<void> _checkForNewEmails() async {
+  // Prevent race conditions - only one check at a time
+  if (_isCheckingEmails) {
+    print('Email check already in progress, skipping...');
+    return;
+  }
+  
+  _isCheckingEmails = true;
+  try {
+    await _performEmailCheck();
+  } finally {
+    _isCheckingEmails = false;
+  }
+}
+
+Future<void> _performEmailCheck() async {
   final prefs = await SharedPreferences.getInstance();
   final lastEmailId = prefs.getString('lastEmailId');
+  final initialSyncComplete = prefs.getBool('initialSyncComplete') ?? false;
   
   try {
     // Load user profile
@@ -69,6 +89,14 @@ Future<void> _checkForNewEmails() async {
     if (emails.isNotEmpty) {
       final latestEmail = emails.first;
       
+      // On first-ever background sync, seed state but do NOT notify
+      if (!initialSyncComplete) {
+        await prefs.setString('lastEmailId', latestEmail.id);
+        await prefs.setBool('initialSyncComplete', true);
+        print('Background: Initial sync completed. Seeded lastEmailId without notifying.');
+        return;
+      }
+
       // Check if this is a new email
       if (lastEmailId == null || latestEmail.id != lastEmailId) {
         // Check if email is very important (contains user profile)
@@ -128,10 +156,7 @@ Future<void> _checkForNewEmails() async {
 
 bool _isExcelFile(String filename) {
   final lower = filename.toLowerCase();
-  return lower.endsWith('.xlsx') || 
-         lower.endsWith('.xls') || 
-         lower.endsWith('.xlsm') ||
-         lower.endsWith('.csv');
+  return FileConstants.excelFileExtensions.any((ext) => lower.endsWith(ext));
 }
 
 Future<bool> _checkExcelForProfile(
@@ -140,6 +165,7 @@ Future<bool> _checkExcelForProfile(
   String attachmentId,
   UserProfile userProfile,
 ) async {
+  File? tempFile;
   try {
     final gmailService = GmailService();
     final attachmentData = await gmailService.downloadAttachment(
@@ -150,13 +176,19 @@ Future<bool> _checkExcelForProfile(
     
     // Save to temp file
     final directory = await getTemporaryDirectory();
-    final filePath = '${directory.path}/temp_excel_${DateTime.now().millisecondsSinceEpoch}.xlsx';
-    final file = File(filePath);
-    await file.writeAsBytes(attachmentData);
+    final filePath = '${directory.path}/${FileConstants.tempFilePrefix}${DateTime.now().millisecondsSinceEpoch}.xlsx';
+    tempFile = File(filePath);
+    await tempFile.writeAsBytes(attachmentData);
     
-    // Parse Excel
-    final bytes = file.readAsBytesSync();
-    final excel = xl.Excel.decodeBytes(bytes);
+    // Parse Excel with error handling for corrupted files
+    final bytes = tempFile.readAsBytesSync();
+    late xl.Excel excel;
+    try {
+      excel = xl.Excel.decodeBytes(bytes);
+    } catch (e) {
+      print('Failed to parse Excel file: $e');
+      return false; // Cleanup handled in finally block
+    }
     
     // Search all sheets for profile data
     for (var table in excel.tables.keys) {
@@ -177,28 +209,60 @@ Future<bool> _checkExcelForProfile(
                                    rowText.contains(userProfile.secondaryEmail.toLowerCase());
         
         if (regNoMatch || (nameMatch && (primaryEmailMatch || secondaryEmailMatch))) {
-          // Clean up temp file
-          await file.delete();
-          return true;
+          return true; // Cleanup handled in finally block
         }
       }
     }
     
-    // Clean up temp file
-    await file.delete();
     return false;
   } catch (e) {
     print('Error checking Excel file: $e');
     return false;
+  } finally {
+    // Always clean up temp file, even if errors occur
+    if (tempFile != null) {
+      try {
+        await tempFile.delete();
+      } catch (e) {
+        print('Failed to delete temp file: $e');
+      }
+    }
   }
 }
 
 Future<void> _showNewEmailNotification(String emailId, String sender, String subject, String body, bool isVeryImportant) async {
   final FlutterLocalNotificationsPlugin notifications = FlutterLocalNotificationsPlugin();
   
-  const AndroidInitializationSettings androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
-  const InitializationSettings initSettings = InitializationSettings(android: androidSettings);
-  await notifications.initialize(initSettings);
+  // Ensure channels exist in this background isolate with vibration disabled
+  final androidImpl = notifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+  if (androidImpl != null) {
+    try {
+      // Delete default/misc channel that may carry vibration defaults
+      await androidImpl.deleteNotificationChannel('miscellaneous');
+    } catch (_) {}
+    // Create our channels with vibration disabled
+    try {
+      await androidImpl.createNotificationChannel(const AndroidNotificationChannel(
+        'new_email_channel',
+        'Bell - New Emails',
+        description: 'Notifications for new emails fetched in background',
+        importance: Importance.high,
+        playSound: true,
+        enableVibration: false,
+      ));
+      await androidImpl.createNotificationChannel(const AndroidNotificationChannel(
+        'very_important_email_channel',
+        'Bell - Very Important Emails',
+        description: 'Notifications for emails matching your profile',
+        importance: Importance.max,
+        playSound: true,
+        enableVibration: false,
+      ));
+    } catch (e) {
+      // ignore non-fatal channel creation errors
+      print('Background: channel setup error: $e');
+    }
+  }
   
   // Create Outlook-style expandable notification
   final BigTextStyleInformation bigTextStyle = BigTextStyleInformation(
@@ -250,11 +314,11 @@ class BackgroundEmailService {
     await Workmanager().registerPeriodicTask(
       'email-check',
       emailCheckTaskName,
-      frequency: const Duration(minutes: 15), // Android minimum is 15 minutes
+      frequency: BackgroundServiceConstants.emailCheckInterval,
       constraints: Constraints(
         networkType: NetworkType.connected,
       ),
-      initialDelay: const Duration(seconds: 10), // Start checking soon after app launch
+      initialDelay: BackgroundServiceConstants.initialDelay,
     );
   }
   
@@ -263,7 +327,7 @@ class BackgroundEmailService {
     await Workmanager().registerOneOffTask(
       'email-check-immediate',
       emailCheckTaskName,
-      initialDelay: const Duration(seconds: 5),
+      initialDelay: BackgroundServiceConstants.immediateCheckDelay,
       constraints: Constraints(
         networkType: NetworkType.connected,
       ),

@@ -22,6 +22,9 @@ import '../widgets/success_alert_bar.dart';
 import 'email_detail_screen.dart';
 import 'edit_profile_screen.dart';
 import 'alarm_management_screen.dart';
+import 'compose_email_screen.dart';
+import 'calendar_screen.dart';
+import 'notes_screen.dart';
 
 class HomePage extends StatefulWidget {
   @override
@@ -54,15 +57,48 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    _alarmService.initialize();
-    _alarmService.requestAndroidPermissions();
     _scrollController.addListener(_onScroll);
-    // Load user profile and auto sign-in
-    _loadProfileAndSignIn();
-    // Clean old emails (older than 60 days)
+    // Initialize alarm service without requesting permissions yet
+    _alarmService.initialize();
+    // Load cached emails and profile WITHOUT auto sign-in on first launch
+    _initializeApp();
+  }
+
+  Future<void> _initializeApp() async {
+    // Load profile first
+    _userProfile = await _profileService.loadProfile();
+    _updateProfileCache(); // Initialize profile cache
+    
+    // Load cached emails for instant display
+    await _loadCachedEmails();
+    
+    // Clean old emails in background
     _cleanOldEmails();
-    // Initialize WebSocket connection
-    _initWebSocket();
+    
+    // Check if already signed in silently (no UI popups)
+    final isSignedIn = await _gmailService.isSignedIn();
+    
+    if (!isSignedIn) {
+      // First time install - clear any leftover alarms to prevent vibration
+      print('🔔 First install detected - clearing any leftover alarms');
+      await _inAppAlarmService.cancelAllAlarms();
+    }
+    
+    if (isSignedIn) {
+      // Only auto-sign if previously signed in
+      // Request permissions after a delay to avoid overlap
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _alarmService.requestAndroidPermissions();
+      
+      // Auto sign-in for already logged in users
+      await Future.delayed(const Duration(milliseconds: 500));
+      _autoSignIn();
+      
+      // Initialize WebSocket
+      _initWebSocket();
+    }
+    // If not signed in, user must click sign-in button manually
+    // This prevents permission popups + sign-in dialog overlapping
   }
 
   Future<void> _initWebSocket() async {
@@ -84,29 +120,11 @@ class _HomePageState extends State<HomePage> {
           _wsService.messages.listen((message) {
             if (message['type'] == 'new_email' && mounted) {
               print('WebSocket: New email notification received');
-              // Show notification snackbar
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Row(
-                    children: [
-                      const Icon(Icons.mail, color: Colors.white),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'New email: ${message['subject'] ?? 'No subject'}',
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                      ),
-                    ],
-                  ),
-                  backgroundColor: Colors.blue.shade700,
-                  action: SnackBarAction(
-                    label: 'Refresh',
-                    textColor: Colors.white,
-                    onPressed: _refreshEmails,
-                  ),
-                  duration: const Duration(seconds: 5),
-                ),
+              // Show notification with unified alert
+              showInfoAlert(
+                context,
+                '📧 New email: ${message['subject'] ?? 'No subject'}',
+                duration: const Duration(seconds: 5),
               );
               // Auto-refresh emails
               _refreshEmails();
@@ -136,33 +154,10 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _loadProfileAndSignIn() async {
-    // Load profile first
-    _userProfile = await _profileService.loadProfile();
-    
-    // Load cached emails first for instant display
-    await _loadCachedEmails();
-    
-    // Check if already signed in and get client without showing UI
-    try {
-      final client = await _gmailService.signInAndGetClient();
-      if (client != null && mounted) {
-        setState(() {
-          _client = client;
-        });
-      }
-    } catch (e) {
-      print('Silent sign-in failed: $e');
-    }
-    
-    // Then fetch fresh emails from server in background (don't await)
-    _autoSignIn();
-  }
-
   Future<void> _loadCachedEmails() async {
     try {
-      // Load ALL cached emails from database (not just 100)
-      final cachedEmails = await _emailDatabase.getAllEmails();
+      // Load recent cached emails from database for fast initial display
+      final cachedEmails = await _emailDatabase.getRecentEmails(200);
       if (cachedEmails.isNotEmpty && mounted) {
         setState(() {
           _emails = cachedEmails;
@@ -196,7 +191,8 @@ class _HomePageState extends State<HomePage> {
         // Save signed-in state
         await prefs.setBool('isSignedIn', true);
         
-        final emails = await _gmailService.fetchEmails(_client!);
+        // Fetch 50 emails initially (like Gmail/Outlook) - user can load more via scroll
+        final emails = await _gmailService.fetchEmails(_client!, maxResults: 50);
         
         // If first time and profile is complete, do a full scan of all emails
         if (isFirstTime && _userProfile.isComplete) {
@@ -256,11 +252,9 @@ class _HomePageState extends State<HomePage> {
         
         if (mounted) {
           setState(() => _client = null);
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Session expired. Please sign in again.'),
-              backgroundColor: Colors.orange,
-            ),
+          showWarningAlert(
+            context,
+            '⚠️ Session expired. Please sign in again.',
           );
         }
       }
@@ -467,8 +461,49 @@ class _HomePageState extends State<HomePage> {
            lower.endsWith('.csv');
   }
 
+  // Cache profile matching data to avoid recomputation
+  List<String>? _cachedNameParts;
+  List<String>? _cachedRegNoVariants;
+  List<String>? _cachedEmailUsernames;
+  String? _cachedProfileHash;
+  
+  void _updateProfileCache() {
+    // Create a hash of profile to detect changes
+    final profileHash = '${_userProfile.name}|${_userProfile.registrationNumber}|${_userProfile.primaryEmail}|${_userProfile.secondaryEmail}';
+    
+    if (_cachedProfileHash == profileHash) return; // No change
+    
+    _cachedProfileHash = profileHash;
+    
+    // Prepare profile data for matching (handle various formats)
+    _cachedNameParts = _userProfile.name.trim().split(RegExp(r'\s+'))
+        .where((p) => p.length > 2)
+        .map((p) => p.toLowerCase())
+        .toList();
+    
+    _cachedRegNoVariants = _userProfile.registrationNumber.isNotEmpty ? [
+      _userProfile.registrationNumber.toLowerCase(),
+      _userProfile.registrationNumber.toLowerCase().replaceAll(' ', ''),
+      _userProfile.registrationNumber.toLowerCase().replaceAll('-', ''),
+      _userProfile.registrationNumber.toLowerCase().replaceAll('_', ''),
+    ] : [];
+    
+    _cachedEmailUsernames = <String>[];
+    if (_userProfile.primaryEmail.isNotEmpty) {
+      _cachedEmailUsernames!.add(_userProfile.primaryEmail.toLowerCase());
+      _cachedEmailUsernames!.add(_userProfile.primaryEmail.toLowerCase().split('@')[0]);
+    }
+    if (_userProfile.secondaryEmail.isNotEmpty) {
+      _cachedEmailUsernames!.add(_userProfile.secondaryEmail.toLowerCase());
+      _cachedEmailUsernames!.add(_userProfile.secondaryEmail.toLowerCase().split('@')[0]);
+    }
+  }
+  
   Future<bool> _checkExcelForProfile(String emailId, String attachmentId) async {
     if (_client == null) return false;
+    
+    // Ensure cache is up to date
+    _updateProfileCache();
     
     try {
       final gmailService = GmailService();
@@ -479,30 +514,19 @@ class _HomePageState extends State<HomePage> {
       );
       
       // Parse Excel inline without saving (for memory efficiency)
-      final excel = xl.Excel.decodeBytes(attachmentData);
-      
-      // Prepare profile data for matching (handle various formats)
-      final nameParts = _userProfile.name.trim().split(RegExp(r'\s+'))
-          .where((p) => p.length > 2)
-          .map((p) => p.toLowerCase())
-          .toList();
-      
-      final regNoVariants = _userProfile.registrationNumber.isNotEmpty ? [
-        _userProfile.registrationNumber.toLowerCase(),
-        _userProfile.registrationNumber.toLowerCase().replaceAll(' ', ''),
-        _userProfile.registrationNumber.toLowerCase().replaceAll('-', ''),
-        _userProfile.registrationNumber.toLowerCase().replaceAll('_', ''),
-      ] : [];
-      
-      final emailUsernames = <String>[];
-      if (_userProfile.primaryEmail.isNotEmpty) {
-        emailUsernames.add(_userProfile.primaryEmail.toLowerCase());
-        emailUsernames.add(_userProfile.primaryEmail.toLowerCase().split('@')[0]);
+      // Wrap in try-catch to handle corrupted files gracefully
+      late xl.Excel excel;
+      try {
+        excel = xl.Excel.decodeBytes(attachmentData);
+      } catch (e) {
+        print('Failed to parse Excel file: $e');
+        return false; // Don't crash, just return no match
       }
-      if (_userProfile.secondaryEmail.isNotEmpty) {
-        emailUsernames.add(_userProfile.secondaryEmail.toLowerCase());
-        emailUsernames.add(_userProfile.secondaryEmail.toLowerCase().split('@')[0]);
-      }
+      
+      // Use cached profile data
+      final nameParts = _cachedNameParts ?? [];
+      final regNoVariants = _cachedRegNoVariants ?? [];
+      final emailUsernames = _cachedEmailUsernames ?? [];
       
       // Search all sheets for profile data
       for (var table in excel.tables.keys) {
@@ -550,7 +574,10 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _scrollController.dispose();
     _searchController.dispose();
-    _searchDebounce?.cancel();
+    // Ensure timer is cancelled before disposal
+    if (_searchDebounce?.isActive ?? false) {
+      _searchDebounce?.cancel();
+    }
     _wsService.dispose();
     super.dispose();
   }
@@ -579,8 +606,9 @@ class _HomePageState extends State<HomePage> {
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Sign-in or fetch failed: $e')),
+      showErrorAlert(
+        context,
+        '❌ Sign-in or fetch failed',
       );
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -596,6 +624,17 @@ class _HomePageState extends State<HomePage> {
     try {
       final moreEmails = await _gmailService.fetchEmails(_client!, pageToken: _nextPageToken);
       print('Fetched ${moreEmails.length} more emails');
+      
+      // Check if we got empty results - stop pagination to prevent infinite loop
+      if (moreEmails.isEmpty) {
+        print('No more emails to load - stopping pagination');
+        if (mounted) {
+          setState(() {
+            _nextPageToken = null;
+          });
+        }
+        return;
+      }
       
       // DON'T mark important here - just save and display
       // Important marking should only happen on initial load or refresh
@@ -614,8 +653,9 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       print('Error loading more emails: $e');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to load more emails: $e')),
+      showErrorAlert(
+        context,
+        '❌ Failed to load more emails',
       );
     } finally {
       if (mounted) setState(() => _loadingMore = false);
@@ -627,19 +667,24 @@ class _HomePageState extends State<HomePage> {
     setState(() => _loading = true);
     try {
       _userProfile = await _profileService.loadProfile(); // Reload profile
-      final emails = await _gmailService.fetchEmails(_client!);
+      _updateProfileCache(); // Update cache after reload
+      
+      // Fetch 50 emails on refresh (like Gmail/Outlook)
+      final emails = await _gmailService.fetchEmails(_client!, maxResults: 50);
       await _markImportantEmails(emails);
       
       // Save to database
       await _emailDatabase.insertEmails(emails);
       
-      // Reload all emails from database
-      final allEmails = await _emailDatabase.getAllEmails();
+      // Load recent 200 emails from database for display
+      final allEmails = await _emailDatabase.getRecentEmails(200);
       
-      setState(() {
-        _emails = allEmails;
-        _nextPageToken = emails.isNotEmpty ? emails.last.pageToken : null;
-      });
+      if (mounted) {
+        setState(() {
+          _emails = allEmails;
+          _nextPageToken = emails.isNotEmpty ? emails.last.pageToken : null;
+        });
+      }
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -687,11 +732,9 @@ class _HomePageState extends State<HomePage> {
       print('Pending notifications: $pendingNotifications');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error setting test alarm: $e'),
-          backgroundColor: Colors.red,
-        ),
+      showErrorAlert(
+        context,
+        '❌ Error setting test alarm',
       );
     }
   }
@@ -703,12 +746,10 @@ class _HomePageState extends State<HomePage> {
       
       if (parseResult == null) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No valid time found in this email.'),
-            duration: Duration(seconds: 3),
-            backgroundColor: Colors.orange,
-          ),
+        showWarningAlert(
+          context,
+          '⚠️ No valid date/time found',
+          duration: const Duration(seconds: 3),
         );
         return;
       }
@@ -717,12 +758,10 @@ class _HomePageState extends State<HomePage> {
       
       if (scheduled == null) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No valid time found in this email.'),
-            duration: Duration(seconds: 3),
-            backgroundColor: Colors.orange,
-          ),
+        showWarningAlert(
+          context,
+          '⚠️ No valid date/time found',
+          duration: const Duration(seconds: 3),
         );
         return;
       }
@@ -748,12 +787,10 @@ class _HomePageState extends State<HomePage> {
       // Check if the time is in the past
       if (scheduled.isBefore(DateTime.now())) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Cannot set alarm for past time: ${DateFormat('MMM d, h:mm a').format(scheduled)}'),
-            duration: const Duration(seconds: 3),
-            backgroundColor: Colors.red,
-          ),
+        showErrorAlert(
+          context,
+          '❌ Cannot set alarm for past time',
+          duration: const Duration(seconds: 3),
         );
         return;
       }
@@ -785,12 +822,10 @@ class _HomePageState extends State<HomePage> {
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error setting alarm: $e'),
-          duration: const Duration(seconds: 3),
-          backgroundColor: Colors.red,
-        ),
+      showErrorAlert(
+        context,
+        '❌ Error setting alarm',
+        duration: const Duration(seconds: 3),
       );
     }
   }
@@ -814,12 +849,10 @@ class _HomePageState extends State<HomePage> {
       }
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error removing alarm: $e'),
-          duration: const Duration(seconds: 3),
-          backgroundColor: Colors.red,
-        ),
+      showErrorAlert(
+        context,
+        '❌ Error removing alarm',
+        duration: const Duration(seconds: 3),
       );
     }
   }
@@ -839,12 +872,10 @@ class _HomePageState extends State<HomePage> {
       // Update in database
       await _emailDatabase.updateEmail(email);
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('✓ Removed from Very Important'),
-          duration: Duration(seconds: 2),
-          backgroundColor: Colors.blue,
-        ),
+      showSuccessAlert(
+        context,
+        '✓ Removed from Very Important',
+        duration: const Duration(seconds: 2),
       );
     }
   }
@@ -899,12 +930,10 @@ class _HomePageState extends State<HomePage> {
     if (!mounted) return;
     final dateFormat = DateFormat('MMM d, yyyy \'at\' h:mm a');
     final scheduledStr = dateFormat.format(scheduledDate);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('✓ Alarm scheduled for:\n$scheduledStr'),
-        duration: const Duration(seconds: 4),
-        backgroundColor: Colors.green,
-      ),
+    showSuccessAlert(
+      context,
+      '✓ Alarm scheduled for:\n$scheduledStr',
+      duration: const Duration(seconds: 4),
     );
   }
 
@@ -980,6 +1009,45 @@ class _HomePageState extends State<HomePage> {
             ],
           ),
           actions: [
+            // Calendar Button
+            IconButton(
+              icon: const Icon(Icons.calendar_today),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const CalendarScreen(),
+                  ),
+                );
+              },
+              tooltip: 'Calendar',
+            ),
+            // Notes Button
+            IconButton(
+              icon: const Icon(Icons.note),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const NotesScreen(),
+                  ),
+                );
+              },
+              tooltip: 'Notes',
+            ),
+            // Secure Vault Button
+            IconButton(
+              icon: const Icon(Icons.lock),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const NotesScreen(isSecureVault: true),
+                  ),
+                );
+              },
+              tooltip: 'Secure Notes',
+            ),
             // Manage Alarms Button
             IconButton(
               icon: Badge(
@@ -1006,10 +1074,26 @@ class _HomePageState extends State<HomePage> {
               },
               tooltip: 'Manage Alarms',
             ),
-            IconButton(
-              icon: const Icon(Icons.person),
-              onPressed: _showProfileSettings,
-              tooltip: 'Profile & Settings',
+            // Profile & Settings Menu
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert),
+              onSelected: (value) {
+                if (value == 'profile') {
+                  _showProfileSettings();
+                }
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'profile',
+                  child: Row(
+                    children: [
+                      Icon(Icons.person, size: 20),
+                      SizedBox(width: 12),
+                      Text('Profile & Settings'),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ],
           bottom: _emails.isNotEmpty
@@ -1228,6 +1312,7 @@ class _HomePageState extends State<HomePage> {
                               }
                               
                               final email = filteredEmails[index];
+                              // Use const widgets where possible to avoid rebuilds
                               return Card(
                                 key: ValueKey(email.id), // Help Flutter identify and reuse widgets
                                 margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1530,14 +1615,14 @@ class _HomePageState extends State<HomePage> {
               Positioned(
                 bottom: 20,
                 left: 20,
-                right: _isSearchExpanded ? 80 : null,
+                right: _isSearchExpanded ? 92 : null,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 500),
                   curve: Curves.easeOutCubic,
-                  width: _isSearchExpanded ? null : 60,
-                  height: 60,
+                  width: _isSearchExpanded ? null : 64,
+                  height: 64,
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(30),
+                    borderRadius: BorderRadius.circular(32),
                     boxShadow: [
                       BoxShadow(
                         color: Colors.black.withOpacity(0.15),
@@ -1548,7 +1633,7 @@ class _HomePageState extends State<HomePage> {
                     ],
                   ),
                   child: ClipRRect(
-                    borderRadius: BorderRadius.circular(30),
+                    borderRadius: BorderRadius.circular(32),
                     child: BackdropFilter(
                       filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
                       child: Container(
@@ -1561,7 +1646,7 @@ class _HomePageState extends State<HomePage> {
                               Colors.white.withOpacity(0.6),
                             ],
                           ),
-                          borderRadius: BorderRadius.circular(30),
+                          borderRadius: BorderRadius.circular(32),
                           border: Border.all(
                             color: Colors.white.withOpacity(0.9),
                             width: 1.8,
@@ -1573,7 +1658,11 @@ class _HomePageState extends State<HomePage> {
                                 autofocus: true,
                                 onChanged: (value) {
                                   // Debounced DB-backed search
-                                  _searchDebounce?.cancel();
+                                  // Cancel any existing timer to prevent memory leaks
+                                  if (_searchDebounce?.isActive ?? false) {
+                                    _searchDebounce?.cancel();
+                                  }
+                                  
                                   setState(() {
                                     _searchQuery = value;
                                   });
@@ -1634,7 +1723,7 @@ class _HomePageState extends State<HomePage> {
                                   icon: Icon(
                                     Icons.search,
                                     color: Colors.grey[700],
-                                    size: 28,
+                                    size: 32,
                                   ),
                                   onPressed: () {
                                     setState(() {
@@ -1645,6 +1734,54 @@ class _HomePageState extends State<HomePage> {
                                 ),
                               ),
                       ),
+                    ),
+                  ),
+                ),
+              ),
+            // Compose Email FAB
+            if (_client != null)
+              Positioned(
+                bottom: 100,
+                right: 20,
+                child: GestureDetector(
+                  onTap: () async {
+                    final result = await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => ComposeEmailScreen(client: _client),
+                      ),
+                    );
+                    // Refresh if email was sent
+                    if (result == true && mounted) {
+                      _showSnackBar('✅ Email sent successfully!');
+                    }
+                  },
+                  child: Container(
+                    width: 64,
+                    height: 64,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(32),
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Colors.blue.shade600,
+                          Colors.blue.shade800,
+                        ],
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.blue.withOpacity(0.4),
+                          blurRadius: 20,
+                          spreadRadius: 2,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.edit,
+                      color: Colors.white,
+                      size: 28,
                     ),
                   ),
                 ),
@@ -1663,20 +1800,21 @@ class _HomePageState extends State<HomePage> {
                     );
                   },
                   child: Container(
-                    width: 50,
-                    height: 50,
+                    width: 64,
+                    height: 64,
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(25),
+                      borderRadius: BorderRadius.circular(32),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.1),
-                          blurRadius: 20,
-                          spreadRadius: 5,
+                          color: Colors.black.withOpacity(0.15),
+                          blurRadius: 24,
+                          spreadRadius: 2,
+                          offset: const Offset(0, 4),
                         ),
                       ],
                     ),
                     child: ClipRRect(
-                      borderRadius: BorderRadius.circular(25),
+                      borderRadius: BorderRadius.circular(32),
                       child: BackdropFilter(
                         filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
                         child: Container(
@@ -1689,16 +1827,16 @@ class _HomePageState extends State<HomePage> {
                                 Colors.white.withOpacity(0.5),
                               ],
                             ),
-                            borderRadius: BorderRadius.circular(25),
+                            borderRadius: BorderRadius.circular(32),
                             border: Border.all(
-                              color: Colors.white.withOpacity(0.8),
-                              width: 1.5,
+                              color: Colors.white.withOpacity(0.9),
+                              width: 1.8,
                             ),
                           ),
                           child: Icon(
                             Icons.arrow_upward,
                             color: Colors.grey[700],
-                            size: 24,
+                            size: 32,
                           ),
                         ),
                       ),
@@ -1708,6 +1846,16 @@ class _HomePageState extends State<HomePage> {
               ),
           ],
         ),
+      ),
+    );
+  }
+
+  void _showSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 2),
       ),
     );
   }
@@ -1763,6 +1911,7 @@ class _HomePageState extends State<HomePage> {
               if (result == true) {
                 // Profile was saved, reload and refresh emails
                 _userProfile = await _profileService.loadProfile();
+                _updateProfileCache(); // Update cache after profile change
                 _refreshEmails();
               }
             },
@@ -1784,8 +1933,9 @@ class _HomePageState extends State<HomePage> {
                   _client = null;
                   _emails.clear();
                 });
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Signed out successfully')),
+                showSuccessAlert(
+                  context,
+                  '✓ Signed out successfully',
                 );
               },
               icon: const Icon(Icons.logout, color: Colors.red),

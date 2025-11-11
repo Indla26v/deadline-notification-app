@@ -7,6 +7,7 @@ class ParserResultsDialog extends StatelessWidget {
   final String emailBody;
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
+  final VoidCallback? onManualPick;
 
   const ParserResultsDialog({
     Key? key,
@@ -15,6 +16,7 @@ class ParserResultsDialog extends StatelessWidget {
     required this.emailBody,
     required this.onConfirm,
     required this.onCancel,
+    this.onManualPick,
   }) : super(key: key);
 
   @override
@@ -114,12 +116,32 @@ class ParserResultsDialog extends StatelessWidget {
 
                     // All Candidates Found Section
                     if (candidatesLog.isNotEmpty) ...[
-                      const Text(
-                        'All Candidates Found:',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                        ),
+                      Row(
+                        children: [
+                          const Text(
+                            'All Candidates Found:',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.amber.shade100,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              '${candidatesLog.length} found',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.amber.shade900,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 8),
                       Container(
@@ -131,7 +153,11 @@ class ParserResultsDialog extends StatelessWidget {
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
-                          children: candidatesLog.map((log) {
+                          children: candidatesLog.asMap().entries.map((entry) {
+                            final index = entry.key;
+                            final log = entry.value;
+                            final isFinalSelection = index == candidatesLog.length - 1;
+                            
                             // Parse the log to extract date and pattern
                             final lines = log.split('\n');
                             final foundLine = lines.firstWhere(
@@ -146,57 +172,149 @@ class ParserResultsDialog extends StatelessWidget {
                               (line) => line.contains('- Using pattern:'),
                               orElse: () => '',
                             );
+                            
+                            // Extract pattern ID
+                            final patternId = patternLine.contains('pattern:') 
+                                ? patternLine.split('pattern:').last.trim() 
+                                : 'Unknown';
+                            
+                            // Calculate pseudo-confidence (higher for full date, lower for time-only)
+                            final confidence = patternId.contains('time-only') || patternId.contains('fallback')
+                                ? '45%' 
+                                : patternId.contains('relative') 
+                                    ? '75%'
+                                    : '95%';
+                            final isLowConfidence = confidence.startsWith('4') || confidence.startsWith('5');
 
-                            return Padding(
-                              padding: const EdgeInsets.only(bottom: 12),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      const Icon(
-                                        Icons.schedule,
-                                        size: 16,
-                                        color: Colors.orange,
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Expanded(
+                            return GestureDetector(
+                              onLongPress: () {
+                                // Copy matched text to clipboard
+                                if (fromLine.isNotEmpty) {
+                                  // Could implement clipboard copy here
+                                }
+                              },
+                              child: Container(
+                                margin: const EdgeInsets.only(bottom: 12),
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: isFinalSelection 
+                                      ? Colors.green.shade50 
+                                      : isLowConfidence 
+                                          ? Colors.orange.shade50
+                                          : Colors.white,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color: isFinalSelection 
+                                        ? Colors.green.shade400 
+                                        : isLowConfidence
+                                            ? Colors.orange.shade300
+                                            : Colors.grey.shade300,
+                                    width: isFinalSelection ? 2 : 1,
+                                  ),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Icon(
+                                          isFinalSelection 
+                                              ? Icons.check_circle 
+                                              : Icons.schedule,
+                                          size: 16,
+                                          color: isFinalSelection 
+                                              ? Colors.green.shade700 
+                                              : isLowConfidence
+                                                  ? Colors.orange.shade700
+                                                  : Colors.blue.shade700,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            foundLine.replaceFirst('Found:', '').trim(),
+                                            style: TextStyle(
+                                              fontSize: 13,
+                                              fontWeight: isFinalSelection 
+                                                  ? FontWeight.bold 
+                                                  : FontWeight.w600,
+                                              color: isFinalSelection 
+                                                  ? Colors.green.shade900
+                                                  : Colors.black87,
+                                            ),
+                                          ),
+                                        ),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: isFinalSelection 
+                                                ? Colors.green.shade700
+                                                : isLowConfidence
+                                                    ? Colors.orange.shade600
+                                                    : Colors.blue.shade600,
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                          child: Text(
+                                            confidence,
+                                            style: const TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    if (fromLine.isNotEmpty)
+                                      Padding(
+                                        padding: const EdgeInsets.only(left: 24, top: 4),
                                         child: Text(
-                                          foundLine.replaceFirst('Found:', '').trim(),
-                                          style: const TextStyle(
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w600,
+                                          '📝 ${fromLine.trim().replaceFirst('- From:', '').trim()}',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.grey.shade700,
+                                            fontStyle: FontStyle.italic,
+                                          ),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    if (patternId != 'Unknown')
+                                      Padding(
+                                        padding: const EdgeInsets.only(left: 24, top: 2),
+                                        child: Text(
+                                          '🔍 Pattern: $patternId',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.grey.shade500,
                                           ),
                                         ),
                                       ),
-                                    ],
-                                  ),
-                                  if (fromLine.isNotEmpty)
-                                    Padding(
-                                      padding: const EdgeInsets.only(left: 24, top: 2),
-                                      child: Text(
-                                        fromLine.trim().replaceFirst('- From:', '').trim(),
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          color: Colors.grey.shade600,
-                                          fontStyle: FontStyle.italic,
-                                        ),
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                  if (patternLine.isNotEmpty)
-                                    Padding(
-                                      padding: const EdgeInsets.only(left: 24, top: 2),
-                                      child: Text(
-                                        patternLine.trim(),
-                                        style: TextStyle(
-                                          fontSize: 10,
-                                          color: Colors.grey.shade500,
+                                    if (isLowConfidence)
+                                      Padding(
+                                        padding: const EdgeInsets.only(left: 24, top: 4),
+                                        child: Text(
+                                          '⚠️ Low confidence - consider manual selection',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w600,
+                                            color: Colors.orange.shade800,
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                ],
+                                    if (isFinalSelection)
+                                      Padding(
+                                        padding: const EdgeInsets.only(left: 24, top: 4),
+                                        child: Text(
+                                          '✓ SELECTED AS FINAL',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.green.shade700,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
                               ),
                             );
                           }).toList(),
@@ -269,36 +387,63 @@ class ParserResultsDialog extends StatelessWidget {
                 ),
               ),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  TextButton(
-                    onPressed: onCancel,
-                    child: const Text(
-                      'CANCEL',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
+                  // Manual picker button (left side)
+                  if (onManualPick != null)
+                    OutlinedButton.icon(
+                      onPressed: onManualPick,
+                      icon: const Icon(Icons.calendar_today, size: 18),
+                      label: const Text(
+                        'PICK MANUALLY',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                        ),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.orange.shade700,
+                        side: BorderSide(color: Colors.orange.shade400, width: 2),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  ElevatedButton(
-                    onPressed: finalDate != null ? onConfirm : null,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 12,
+                  
+                  // Right side buttons
+                  Row(
+                    children: [
+                      TextButton(
+                        onPressed: onCancel,
+                        child: const Text(
+                          'CANCEL',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
                       ),
-                    ),
-                    child: const Text(
-                      'YES, SET ALARM',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
+                      const SizedBox(width: 12),
+                      ElevatedButton(
+                        onPressed: finalDate != null ? onConfirm : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 24,
+                            vertical: 12,
+                          ),
+                        ),
+                        child: const Text(
+                          'YES, SET ALARM',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
                       ),
-                    ),
+                    ],
                   ),
                 ],
               ),

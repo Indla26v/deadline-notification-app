@@ -20,7 +20,7 @@ class GoogleAuthClient extends http.BaseClient {
 
 class GmailService {
   static const List<String> _scopes = <String>[
-    gmail.GmailApi.gmailReadonlyScope,
+    gmail.GmailApi.gmailModifyScope, // Changed from readonly to allow sending
     'email',
     'profile',
     'openid',
@@ -64,13 +64,14 @@ class GmailService {
     return _googleSignIn.currentUser;
   }
 
-  Future<List<EmailModel>> fetchEmails(auth.AuthClient client, {String? pageToken}) async {
+  Future<List<EmailModel>> fetchEmails(auth.AuthClient client, {String? pageToken, int maxResults = 25}) async {
     final gmailApi = gmail.GmailApi(client);
     
     // Fetch threads instead of individual messages
+    // Reduced from 100 to 25 for much faster initial load
     final threadsResponse = await gmailApi.users.threads.list(
       'me', 
-      maxResults: 100, // Increased from 20 to 100 for more emails per fetch
+      maxResults: maxResults,
       q: 'in:inbox',
       pageToken: pageToken,
     );
@@ -170,7 +171,7 @@ class GmailService {
         body: body.isNotEmpty ? body : snippet,
         link: 'https://mail.google.com/mail/u/0/#inbox/${thread.id!}',
         pageToken: threadsResponse.nextPageToken,
-        receivedDate: latestDate, // Use the actual latest date from all thread messages
+        receivedDate: latestDate ?? DateTime.now(), // Fallback to current time if no date found
         attachments: allAttachments, // All attachments from entire thread
         threadId: thread.id,
         messageCount: messages.length,
@@ -238,6 +239,47 @@ class GmailService {
     }
     
     throw Exception('Failed to download attachment');
+  }
+
+  Future<void> sendEmail(
+    auth.AuthClient client, {
+    required String to,
+    required String subject,
+    required String body,
+    String? cc,
+    String? bcc,
+  }) async {
+    try {
+      final gmailApi = gmail.GmailApi(client);
+      
+      // Create RFC 2822 formatted email
+      String email = '';
+      email += 'To: $to\r\n';
+      if (cc != null && cc.isNotEmpty) {
+        email += 'Cc: $cc\r\n';
+      }
+      if (bcc != null && bcc.isNotEmpty) {
+        email += 'Bcc: $bcc\r\n';
+      }
+      email += 'Subject: $subject\r\n';
+      email += 'Content-Type: text/plain; charset=utf-8\r\n';
+      email += '\r\n';
+      email += body;
+
+      // Encode email in base64url format
+      String encodedEmail = base64Url.encode(utf8.encode(email));
+      
+      // Send email
+      await gmailApi.users.messages.send(
+        gmail.Message(raw: encodedEmail),
+        'me',
+      );
+      
+      print('Email sent successfully to $to');
+    } catch (e) {
+      print('Error sending email: $e');
+      rethrow;
+    }
   }
 
   Future<void> markAsRead(auth.AuthClient client, String messageId) async {

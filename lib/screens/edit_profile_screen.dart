@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/user_profile.dart';
 import '../services/profile_service.dart';
-import '../widgets/glossy_snackbar.dart';
+import '../widgets/success_alert_bar.dart';
 
 class EditProfileScreen extends StatefulWidget {
   const EditProfileScreen({super.key});
@@ -66,20 +66,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       await _profileService.saveProfile(updatedProfile);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: const [
-                Icon(Icons.check_circle, color: Colors.white),
-                SizedBox(width: 12),
-                Text('Profile Updated Successfully'),
-              ],
-            ),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            duration: const Duration(seconds: 3),
-          ),
+        showSuccessAlert(
+          context,
+          '✓ Profile Updated Successfully',
+          duration: const Duration(seconds: 3),
         );
         
         // Wait a moment to show the snackbar
@@ -90,19 +80,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                const Icon(Icons.error, color: Colors.white),
-                const SizedBox(width: 12),
-                Expanded(child: Text('Failed to save: ${e.toString()}')),
-              ],
-            ),
-            backgroundColor: Colors.red,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          ),
+        showErrorAlert(
+          context,
+          '❌ Failed to save profile',
         );
       }
     } finally {
@@ -114,31 +94,25 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     final email = _whitelistEmailController.text.trim();
     
     if (email.isEmpty) {
-      showGlossySnackbar(
+      showInfoAlert(
         context,
-        message: 'Please enter an email address',
-        color: const Color(0xFF66B2FF), // Blue
-        icon: Icons.info,
+        'ℹ️ Please enter an email address',
       );
       return;
     }
 
     if (!_isValidEmail(email)) {
-      showGlossySnackbar(
+      showErrorAlert(
         context,
-        message: 'Please enter a valid email address',
-        color: const Color(0xFFFF6B6B), // Red
-        icon: Icons.error,
+        '❌ Please enter a valid email address',
       );
       return;
     }
 
     if (_whitelistedEmails.contains(email)) {
-      showGlossySnackbar(
+      showInfoAlert(
         context,
-        message: 'Email already in whitelist',
-        color: const Color(0xFF66B2FF), // Blue
-        icon: Icons.info,
+        'ℹ️ Email already in whitelist',
       );
       return;
     }
@@ -148,11 +122,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       _whitelistEmailController.clear();
     });
 
-    showGlossySnackbar(
+    showSuccessAlert(
       context,
-      message: 'Email added to whitelist',
-      color: const Color(0xFF7FD97F), // Green
-      icon: Icons.check_circle,
+      '✓ Email added to whitelist',
     );
   }
 
@@ -161,11 +133,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       _whitelistedEmails.remove(email);
     });
 
-    showGlossySnackbar(
+    showSuccessAlert(
       context,
-      message: 'Email removed from whitelist',
-      color: const Color(0xFF7FD97F), // Green
-      icon: Icons.check_circle,
+      '✓ Email removed from whitelist',
     );
   }
 
@@ -194,11 +164,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ];
               });
               Navigator.pop(context);
-              showGlossySnackbar(
+              showSuccessAlert(
                 context,
-                message: 'Whitelist reset to defaults',
-                color: const Color(0xFF7FD97F), // Green
-                icon: Icons.check_circle,
+                '✓ Whitelist reset to defaults',
               );
             },
             style: ElevatedButton.styleFrom(

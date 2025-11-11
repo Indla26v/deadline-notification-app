@@ -92,17 +92,34 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
     
     if (hasHtml) {
       // Render as HTML
-      return Html(
-        data: body,
-        style: {
-          "body": Style(
-            fontSize: FontSize(15),
-            lineHeight: LineHeight(1.6),
-            color: Colors.black87,
-          ),
-          "p": Style(
-            margin: Margins.only(bottom: 8),
-          ),
+      print('📧 Rendering HTML body (length: ${body.length} chars)');
+      return Container(
+        width: double.infinity,
+        child: Html(
+          data: body,
+          shrinkWrap: false,
+          style: {
+            "*": Style(
+              margin: Margins.zero,
+              padding: HtmlPaddings.zero,
+            ),
+            "body": Style(
+              fontSize: FontSize(15),
+              lineHeight: LineHeight(1.6),
+              color: Colors.black87,
+              margin: Margins.zero,
+              padding: HtmlPaddings.zero,
+              display: Display.block,
+            ),
+            "html": Style(
+              margin: Margins.zero,
+              padding: HtmlPaddings.zero,
+              display: Display.block,
+            ),
+            "p": Style(
+              margin: Margins.only(bottom: 8),
+              display: Display.block,
+            ),
           "a": Style(
             color: Colors.blue,
             textDecoration: TextDecoration.underline,
@@ -121,6 +138,12 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
             fontWeight: FontWeight.bold,
             border: Border.all(color: Colors.grey.shade300),
           ),
+          "div": Style(
+            display: Display.block,
+          ),
+          "span": Style(
+            display: Display.inline,
+          ),
         },
         onLinkTap: (url, attributes, element) async {
           if (url != null) {
@@ -130,8 +153,11 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
             }
           }
         },
+        ),
       );
     }
+    
+    print('📧 Rendering plain text body (length: ${body.length} chars)');
     
     // Plain text rendering (existing logic)
     final lines = body.split('\n');
@@ -517,12 +543,10 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
       Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error setting alarm: $e'),
-          duration: const Duration(seconds: 3),
-          backgroundColor: Colors.red,
-        ),
+      showErrorAlert(
+        context,
+        '❌ Error setting alarm',
+        duration: const Duration(seconds: 3),
       );
     }
   }
@@ -559,11 +583,9 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
       Navigator.pop(context, true);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error removing alarm: $e'),
-          backgroundColor: Colors.red,
-        ),
+      showErrorAlert(
+        context,
+        '❌ Error removing alarm',
       );
     }
   }
@@ -586,20 +608,16 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
       await _emailDatabase.updateEmail(widget.email);
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('✓ Marked as Very Important'),
-          duration: Duration(seconds: 2),
-          backgroundColor: Colors.red,
-        ),
+      showSuccessAlert(
+        context,
+        '✓ Marked as Very Important',
+        duration: const Duration(seconds: 2),
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error marking as important: $e'),
-          backgroundColor: Colors.red,
-        ),
+      showErrorAlert(
+        context,
+        '❌ Error marking as important',
       );
     }
   }
@@ -620,20 +638,16 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
       await _emailDatabase.updateEmail(widget.email);
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('✓ Removed from Very Important'),
-          duration: Duration(seconds: 2),
-          backgroundColor: Colors.blue,
-        ),
+      showSuccessAlert(
+        context,
+        '✓ Removed from Very Important',
+        duration: const Duration(seconds: 2),
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error removing from important: $e'),
-          backgroundColor: Colors.red,
-        ),
+      showErrorAlert(
+        context,
+        '❌ Error removing from important',
       );
     }
   }
@@ -641,9 +655,11 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.grey[50],
       appBar: AppBar(
         title: const Text('Email Details'),
-        backgroundColor: Colors.green,
+        backgroundColor: Colors.blue.shade700,
+        elevation: 0,
         actions: [
           PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert),
@@ -721,56 +737,101 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
               left: 16.0,
               right: 16.0,
               top: 16.0,
-              bottom: _googleFormUrl != null ? 100.0 : 16.0, // Extra padding if form button exists
+              bottom: _googleFormUrl != null ? 100.0 : 16.0,
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-            // Subject
-            Text(
-              widget.email.subject,
-              style: const TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.bold,
-                height: 1.3,
-              ),
-            ),
-            const SizedBox(height: 16),
+                // Main email card with rounded corners
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.05),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Subject
+                      Text(
+                        widget.email.subject,
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          height: 1.3,
+                          color: Colors.grey[900],
+                        ),
+                      ),
+                      const SizedBox(height: 20),
 
-            // From
-            Row(
-              children: [
-                const Icon(Icons.person, size: 18, color: Colors.grey),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    widget.email.sender,
-                    style: const TextStyle(fontSize: 15, color: Colors.grey),
+                      // From - with rounded background
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade50,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Row(
+                          children: [
+                            CircleAvatar(
+                              radius: 18,
+                              backgroundColor: Colors.blue.shade700,
+                              child: const Icon(Icons.person, size: 20, color: Colors.white),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                widget.email.sender,
+                                style: TextStyle(
+                                  fontSize: 15,
+                                  color: Colors.grey[800],
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+
+                      // Date - with icon
+                      if (widget.email.receivedDate != null)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade100,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.schedule, size: 18, color: Colors.grey[700]),
+                              const SizedBox(width: 8),
+                              Text(
+                                DateFormat('MMM d, yyyy at h:mm a').format(widget.email.receivedDate!),
+                                style: TextStyle(fontSize: 15, color: Colors.grey[700]),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                      const SizedBox(height: 20),
+                      Divider(height: 1, thickness: 1, color: Colors.grey[200]),
+                      const SizedBox(height: 20),
+
+                      // Email Body with automatic table detection and clickable links
+                      _buildEmailBody(widget.email.body),
+                    ],
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 8),
 
-            // Date
-            if (widget.email.receivedDate != null)
-              Row(
-                children: [
-                  const Icon(Icons.access_time, size: 18, color: Colors.grey),
-                  const SizedBox(width: 8),
-                  Text(
-                    DateFormat('MMM d, yyyy at h:mm a').format(widget.email.receivedDate!),
-                    style: const TextStyle(fontSize: 15, color: Colors.grey),
-                  ),
-                ],
-              ),
-
-            const Divider(height: 32, thickness: 1),
-
-            // Email Body with automatic table detection and clickable links
-            _buildEmailBody(widget.email.body),
-
-            // Thread Messages Section (if this is a conversation)
+                // Thread Messages Section (if this is a conversation)
             if (widget.email.threadMessages != null && widget.email.threadMessages!.isNotEmpty) ...[
               const SizedBox(height: 24),
               const Divider(thickness: 1),
@@ -915,30 +976,94 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
         ? _formatBytes(attachment.sizeBytes!) 
         : 'Unknown size';
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        leading: Icon(
-          _getIconForMimeType(attachment.mimeType),
-          color: Colors.green,
-          size: 32,
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade200),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.03),
+            blurRadius: 5,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: isDownloading ? null : () => _downloadAndOpenAttachment(attachment),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(
+                    _getIconForMimeType(attachment.mimeType),
+                    color: Colors.blue.shade700,
+                    size: 28,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        attachment.filename,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 15,
+                          color: Colors.grey[900],
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '$sizeStr • ${attachment.mimeType}',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                if (isDownloading)
+                  SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.5,
+                      color: Colors.blue.shade700,
+                    ),
+                  )
+                else
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade700,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.download,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                  ),
+              ],
+            ),
+          ),
         ),
-        title: Text(
-          attachment.filename,
-          style: const TextStyle(fontWeight: FontWeight.w500),
-        ),
-        subtitle: Text('$sizeStr • ${attachment.mimeType}'),
-        trailing: isDownloading
-            ? const SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : IconButton(
-                icon: const Icon(Icons.download),
-                onPressed: () => _downloadAndOpenAttachment(attachment),
-              ),
-        onTap: isDownloading ? null : () => _downloadAndOpenAttachment(attachment),
       ),
     );
   }
@@ -965,11 +1090,9 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
   Future<void> _downloadAndOpenAttachment(EmailAttachment attachment) async {
     if (widget.client == null) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Please sign in to download attachments'),
-            backgroundColor: Colors.red,
-          ),
+        showErrorAlert(
+          context,
+          '❌ Please sign in to download attachments',
         );
       }
       return;
@@ -1000,24 +1123,20 @@ class _EmailDetailScreenState extends State<EmailDetailScreen> {
       
       if (result.type != ResultType.done) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Could not open file: ${result.message}'),
-              backgroundColor: Colors.red,
-            ),
+          showErrorAlert(
+            context,
+            '❌ Could not open file',
           );
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error downloading attachment: $e'),
-            backgroundColor: Colors.red,
-          ),
+        showErrorAlert(
+          context,
+          '❌ Error downloading attachment',
         );
       }
-    } finally {
+    } finally{
       setState(() {
         _downloadingAttachments[attachment.attachmentId] = false;
       });

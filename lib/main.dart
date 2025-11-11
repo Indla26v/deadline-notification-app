@@ -14,15 +14,99 @@ final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterL
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
+  // Reset and configure Android notification channels BEFORE any notifications are used
+  final androidImpl = flutterLocalNotificationsPlugin
+      .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+  if (androidImpl != null) {
+    try {
+      // Delete likely existing channels to avoid inheriting old vibration settings
+      final channelsToDelete = <String>[
+        'miscellaneous', // plugin default
+        'new_email_channel',
+        'very_important_email_channel',
+        'bell_new_emails',
+        'confirmation_channel',
+        'test_channel',
+        'bell_fallback',
+        'WorkManager', // AndroidX WorkManager default channel
+      ];
+      for (final id in channelsToDelete) {
+        try { await androidImpl.deleteNotificationChannel(id); } catch (_) {}
+      }
+      
+      // Recreate the channels we use with vibration disabled by default
+      const channelsToCreate = <AndroidNotificationChannel>[
+        AndroidNotificationChannel(
+          'new_email_channel',
+          'Bell - New Emails',
+          description: 'Notifications for new emails fetched in background',
+          importance: Importance.high,
+          playSound: true,
+          enableVibration: false,
+        ),
+        AndroidNotificationChannel(
+          'very_important_email_channel',
+          'Bell - Very Important Emails',
+          description: 'Notifications for emails matching your profile',
+          importance: Importance.max,
+          playSound: true,
+          enableVibration: false,
+        ),
+        AndroidNotificationChannel(
+          'bell_new_emails',
+          'Bell - New Email Alerts',
+          description: 'General bell email notifications',
+          importance: Importance.high,
+          playSound: true,
+          enableVibration: false,
+        ),
+        AndroidNotificationChannel(
+          'confirmation_channel',
+          'Bell - Confirmations',
+          description: 'Alarm set confirmations and app system notices',
+          importance: Importance.defaultImportance,
+          playSound: true,
+          enableVibration: false,
+        ),
+        AndroidNotificationChannel(
+          'test_channel',
+          'Bell - Test',
+          description: 'Diagnostic test notifications',
+          importance: Importance.defaultImportance,
+          playSound: false,
+          enableVibration: false,
+        ),
+        AndroidNotificationChannel(
+          'WorkManager',
+          'WorkManager',
+          description: 'AndroidX WorkManager background tasks',
+          importance: Importance.low,
+          playSound: false,
+          enableVibration: false,
+        ),
+      ];
+      for (final ch in channelsToCreate) {
+        await androidImpl.createNotificationChannel(ch);
+      }
+      // IMPORTANT: We intentionally do NOT create 'bell_alarm_channel' here.
+      // The native AlarmService will create it with vibration enabled only when an actual alarm rings.
+    } catch (e) {
+      // Non-fatal; proceed even if channel ops fail
+      // ignore: avoid_print
+      print('Channel reset error: $e');
+    }
+  }
+  
+  // --- VIBRATION DEBUG: Disabling In-App Alarm Service ---
+  /*
   // Initialize in-app alarm service
   await InAppAlarmService().initialize();
+  */
+  // --- END VIBRATION DEBUG ---
   
   // Initialize background email checking
   await BackgroundEmailService.initialize();
   await BackgroundEmailService.registerPeriodicTask();
-  // REMOVED: registerOneTimeTask() to prevent vibration on app launch
-  // The immediate check was causing notification vibrations when app starts
-  // Background sync will happen after 15 minutes instead
   
   // Initialize notifications for background emails
   const AndroidInitializationSettings androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -63,9 +147,6 @@ void main() async {
       print('Email not found in database or no context available');
     }
   };
-  
-  // Run initial database sync after services are initialized
-  await InAppAlarmService().syncWithDatabase();
   
   runApp(MailAlarmApp());
 }

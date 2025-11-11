@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:bell/services/in_app_alarm_service.dart';
 import 'package:intl/intl.dart';
+import '../widgets/success_alert_bar.dart';
 
 class AlarmRingingScreen extends StatefulWidget {
   final String emailId;
@@ -58,8 +59,9 @@ class _AlarmRingingScreenState extends State<AlarmRingingScreen>
     );
     
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Alarm snoozed for 10 minutes')),
+      showSuccessAlert(
+        context,
+        '⏰ Alarm snoozed for 10 minutes',
       );
       Navigator.of(context).pop();
     }
